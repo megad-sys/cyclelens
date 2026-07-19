@@ -109,6 +109,49 @@ def test_explain_with_stubbed_tavily_returns_source_url(client, monkeypatch):
     assert "Research prototype, not medical advice." in body["sentence"]
 
 
+def test_explain_degrades_gracefully_when_tavily_key_set_but_call_fails(client, monkeypatch):
+    # Regression test: a key being SET but the API call itself failing (invalid/expired
+    # key, no credit, rate limit, network issue) must degrade gracefully, not 500.
+    monkeypatch.setenv("TAVILY_API_KEY", "invalid-key")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    class _RaisingTavilyClient:
+        def __init__(self, api_key):
+            raise RuntimeError("401 Unauthorized: invalid API key")
+
+    monkeypatch.setattr("tavily.TavilyClient", _RaisingTavilyClient)
+
+    response = client.post("/explain", json={
+        "phase_label": "Luteal",
+        "top_drivers": [{"feature": "resting_hr", "direction": "up", "weight": 0.42}],
+    })
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["source_url"] is None
+    assert "Research prototype, not medical advice." in body["sentence"]
+
+
+def test_explain_degrades_gracefully_when_openai_key_set_but_call_fails(client, monkeypatch):
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "invalid-key")
+
+    class _RaisingOpenAIClient:
+        def __init__(self, api_key):
+            raise RuntimeError("401 Unauthorized: invalid API key")
+
+    monkeypatch.setattr("openai.OpenAI", _RaisingOpenAIClient)
+
+    response = client.post("/explain", json={
+        "phase_label": "Luteal",
+        "top_drivers": [{"feature": "resting_hr", "direction": "up", "weight": 0.42}],
+    })
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "Research prototype, not medical advice." in body["sentence"]
+
+
 def test_explain_caches_identical_requests(client, monkeypatch):
     monkeypatch.delenv("TAVILY_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)

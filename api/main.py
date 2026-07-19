@@ -4,6 +4,9 @@ POST /predict: features (any subset, model-order-filled with NaN) -> phase +
 probabilities + top-5 SHAP drivers (via src.explain.explain_one).
 POST /explain: phase + drivers -> ONE grounded plain-language sentence
 (Tavily search for medical context, then one OpenAI call to phrase it).
+POST /ask: free-form question + features -> ONE grounded answer, via the
+tool-calling agent in src.agent (predict_phase / explain_prediction /
+search_medical, capped at 4 tool calls, diagnosis/treatment requests declined).
 Both TAVILY_API_KEY and OPENAI_API_KEY are optional -- their absence degrades
 gracefully (skipped grounding / templated sentence), never a hard failure.
 """
@@ -24,6 +27,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from src.agent import answer_question
 from src.explain import explain_one
 from src.splits import LABEL_NAMES
 
@@ -96,6 +100,16 @@ class ExplainResponse(BaseModel):
     source_url: str | None
 
 
+class AskRequest(BaseModel):
+    question: str
+    features: dict[str, float | None] = Field(default_factory=dict)
+
+
+class AskResponse(BaseModel):
+    answer: str
+    source_url: str | None
+
+
 def _build_feature_row(features: dict, feature_columns: list[str]) -> pd.DataFrame:
     row = {col: features.get(col) for col in feature_columns}
     df = pd.DataFrame([row], columns=feature_columns)
@@ -141,17 +155,21 @@ def _tavily_search(query: str) -> dict | None:
     api_key = os.environ.get("TAVILY_API_KEY")
     if not api_key:
         return None
-    from tavily import TavilyClient
+    try:
+        from tavily import TavilyClient
 
-    client = TavilyClient(api_key=api_key)
-    response = client.search(
-        query=query, search_depth="basic", max_results=3, include_domains=ALLOWED_GROUNDING_DOMAINS,
-    )
-    results = response.get("results", [])
-    if not results:
+        client = TavilyClient(api_key=api_key)
+        response = client.search(
+            query=query, search_depth="basic", max_results=3, include_domains=ALLOWED_GROUNDING_DOMAINS,
+        )
+        results = response.get("results", [])
+        if not results:
+            return None
+        top = results[0]
+        return {"snippet": top.get("content", ""), "url": top.get("url", ""), "title": top.get("title", "")}
+    except Exception as exc:  # invalid/expired key, rate limit, network issue -- never hard-fail
+        print(f"[api] _tavily_search failed, degrading gracefully: {exc}")
         return None
-    top = results[0]
-    return {"snippet": top.get("content", ""), "url": top.get("url", ""), "title": top.get("title", "")}
 
 
 def _template_sentence(phase_label: str, top_drivers: list[dict]) -> str:
@@ -166,24 +184,30 @@ def _openai_phrase(phase_label: str, top_drivers: list[dict], snippet: str | Non
     if not api_key:
         return _template_sentence(phase_label, top_drivers)
 
-    from openai import OpenAI
+    try:
+        from openai import OpenAI
 
-    client = OpenAI(api_key=api_key)
-    driver_text = ", ".join(f"{d['feature']} ({d['direction']})" for d in top_drivers[:5]) or "no drivers provided"
-    context = snippet or "no external medical reference is available"
-    prompt = (
-        f"A wearable-based model predicts the menstrual cycle phase '{phase_label}', driven mainly by: "
-        f"{driver_text}. Medical reference context: {context}\n\n"
-        "Write ONE plain-language sentence explaining why these wearable signals point to this phase, "
-        "using ONLY the medical reference context above. Do not add unsupported medical claims."
-    )
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=120,
-        temperature=0.3,
-    )
-    return response.choices[0].message.content.strip()
+        client = OpenAI(api_key=api_key)
+        driver_text = (
+            ", ".join(f"{d['feature']} ({d['direction']})" for d in top_drivers[:5]) or "no drivers provided"
+        )
+        context = snippet or "no external medical reference is available"
+        prompt = (
+            f"A wearable-based model predicts the menstrual cycle phase '{phase_label}', driven mainly by: "
+            f"{driver_text}. Medical reference context: {context}\n\n"
+            "Write ONE plain-language sentence explaining why these wearable signals point to this phase, "
+            "using ONLY the medical reference context above. Do not add unsupported medical claims."
+        )
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=120,
+            temperature=0.3,
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as exc:  # invalid/expired key, no credit, rate limit -- never hard-fail
+        print(f"[api] _openai_phrase failed, degrading gracefully: {exc}")
+        return _template_sentence(phase_label, top_drivers)
 
 
 @app.post("/explain", response_model=ExplainResponse)
@@ -208,3 +232,8 @@ def explain(request: ExplainRequest) -> dict:
     }
     _explain_cache[cache_key] = result
     return result
+
+
+@app.post("/ask", response_model=AskResponse)
+def ask(request: AskRequest) -> dict:
+    return answer_question(request.question, request.features)
