@@ -122,6 +122,7 @@ DYLD_LIBRARY_PATH="$(pwd)/.venv/native-libs" python3 -m src.train
 DYLD_LIBRARY_PATH="$(pwd)/.venv/native-libs" python3 -m src.evaluate --split test
 DYLD_LIBRARY_PATH="$(pwd)/.venv/native-libs" python3 -m src.crossval
 DYLD_LIBRARY_PATH="$(pwd)/.venv/native-libs" python3 -m src.explain --split test
+DYLD_LIBRARY_PATH="$(pwd)/.venv/native-libs" python3 scripts/make_feature_stats.py
 ```
 
 | step | writes |
@@ -132,6 +133,7 @@ DYLD_LIBRARY_PATH="$(pwd)/.venv/native-libs" python3 -m src.explain --split test
 | `src.evaluate` | `reports/eval_test.json`, `reports/confusion_test.png` |
 | `src.crossval` | `reports/crossval.json` |
 | `src.explain` | `reports/shap_global.png`, `reports/shap_by_class.png`, `reports/shap_importance.json` |
+| `scripts/make_feature_stats.py` | `models/feature_stats.json` (population mean/std for on-the-fly `_pz` fill in `/predict`) |
 
 Run the API locally (see `api/main.py`):
 
