@@ -155,10 +155,18 @@ GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 GROQ_MODEL = "llama-3.3-70b-versatile"
 
 
+def _groq_api_key() -> str | None:
+    key = os.environ.get("GROQ_API_KEY", "").strip()
+    return key or None
+
+
 def _create_openai_client():
     from openai import OpenAI
 
-    return OpenAI(api_key=os.environ["GROQ_API_KEY"], base_url=GROQ_BASE_URL)
+    api_key = _groq_api_key()
+    if not api_key:
+        raise RuntimeError("GROQ_API_KEY not set")
+    return OpenAI(api_key=api_key, base_url=GROQ_BASE_URL)
 
 
 def _run_llm_loop(question: str, features: dict) -> tuple[str, str | None]:
@@ -230,7 +238,7 @@ def answer_question(question: str, features: dict) -> dict[str, Any]:
         }
 
     try:
-        if not os.environ.get("GROQ_API_KEY"):
+        if not _groq_api_key():
             print("[llm] GROQ_API_KEY not set — using template fallback")
             return _templated_answer(features)
 

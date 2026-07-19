@@ -61,10 +61,13 @@ def client(monkeypatch):
         yield test_client
 
 
-def test_health_ok(client):
+def test_health_ok(client, monkeypatch):
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
     response = client.get("/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["groq_configured"] is False
 
 
 def test_predict_returns_valid_phase_and_probabilities(client):
@@ -199,7 +202,11 @@ def test_explain_degrades_gracefully_when_groq_key_set_but_call_fails(client, mo
 
 def test_explain_caches_identical_requests(client, monkeypatch):
     monkeypatch.delenv("TAVILY_API_KEY", raising=False)
-    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.setattr(
+        api_main,
+        "_openai_phrase",
+        lambda phase_label, top_drivers, snippet: "Elevated temperature is consistent with the follicular phase.",
+    )
 
     payload = {
         "phase_label": "Follicular",

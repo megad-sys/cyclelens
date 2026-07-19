@@ -163,9 +163,14 @@ def _fill_derived_features(features: dict, feature_columns: list[str], feature_s
     return filled
 
 
+def _groq_api_key() -> str | None:
+    key = os.environ.get("GROQ_API_KEY", "").strip()
+    return key or None
+
+
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok"}
+    return {"status": "ok", "groq_configured": _groq_api_key() is not None}
 
 
 @app.post("/predict", response_model=PredictResponse)
@@ -231,7 +236,7 @@ GROQ_MODEL = "llama-3.3-70b-versatile"
 
 
 def _openai_phrase(phase_label: str, top_drivers: list[dict], snippet: str | None) -> str:
-    api_key = os.environ.get("GROQ_API_KEY")
+    api_key = _groq_api_key()
     if not api_key:
         print("[llm] GROQ_API_KEY not set — using template fallback")
         return _template_sentence(phase_label, top_drivers)
@@ -282,7 +287,11 @@ def explain(request: ExplainRequest) -> dict:
         "source_title": grounding["title"] if grounding else None,
         "source_url": grounding["url"] if grounding else None,
     }
-    _explain_cache[cache_key] = result
+    # Don't cache template fallbacks — once GROQ_API_KEY is fixed on Render, the next
+    # identical request should get a real LLM sentence instead of a stale template.
+    template = _template_sentence(request.phase_label, top_drivers)
+    if not sentence.startswith(template.rstrip(".")):
+        _explain_cache[cache_key] = result
     return result
 
 
