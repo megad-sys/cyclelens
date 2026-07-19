@@ -1,4 +1,4 @@
-"""LLM agent (OpenAI tool-calling) that answers free-form questions about a
+"""LLM agent (Groq tool-calling via OpenAI-compatible API) that answers free-form questions about a
 single participant-day, using the trained model, SHAP explainer, and a
 Tavily-grounded medical search.
 
@@ -151,10 +151,14 @@ def _execute_tool(name: str, args: dict, features: dict) -> dict:
     return {"error": f"unknown tool '{name}'"}
 
 
+GROQ_BASE_URL = "https://api.groq.com/openai/v1"
+GROQ_MODEL = "llama-3.3-70b-versatile"
+
+
 def _create_openai_client():
     from openai import OpenAI
 
-    return OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+    return OpenAI(api_key=os.environ["GROQ_API_KEY"], base_url=GROQ_BASE_URL)
 
 
 def _run_llm_loop(question: str, features: dict) -> tuple[str, str | None]:
@@ -173,7 +177,7 @@ def _run_llm_loop(question: str, features: dict) -> tuple[str, str | None]:
     while True:
         allow_tools = tool_calls_made < MAX_TOOL_CALLS
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=GROQ_MODEL,
             messages=messages,
             tools=TOOLS_SCHEMA,
             tool_choice="auto" if allow_tools else "none",
@@ -226,7 +230,8 @@ def answer_question(question: str, features: dict) -> dict[str, Any]:
         }
 
     try:
-        if not os.environ.get("OPENAI_API_KEY"):
+        if not os.environ.get("GROQ_API_KEY"):
+            print("[llm] GROQ_API_KEY not set — using template fallback")
             return _templated_answer(features)
 
         answer, source_url = _run_llm_loop(question, features)

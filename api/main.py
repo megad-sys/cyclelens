@@ -3,11 +3,11 @@
 POST /predict: features (any subset, model-order-filled with NaN) -> phase +
 probabilities + top-5 SHAP drivers (via src.explain.explain_one).
 POST /explain: phase + drivers -> ONE grounded plain-language sentence
-(Tavily search for medical context, then one OpenAI call to phrase it).
+(Tavily search for medical context, then one Groq LLM call to phrase it).
 POST /ask: free-form question + features -> ONE grounded answer, via the
 tool-calling agent in src.agent (predict_phase / explain_prediction /
 search_medical, capped at 4 tool calls, diagnosis/treatment requests declined).
-Both TAVILY_API_KEY and OPENAI_API_KEY are optional -- their absence degrades
+Both TAVILY_API_KEY and GROQ_API_KEY are optional -- their absence degrades
 gracefully (skipped grounding / templated sentence), never a hard failure.
 """
 
@@ -35,12 +35,13 @@ load_dotenv()
 
 MODEL_PATH = Path(os.environ.get("MODEL_PATH", "models/lgbm.txt"))
 FEATURE_NAMES_PATH = Path(os.environ.get("FEATURE_NAMES_PATH", "models/feature_names.json"))
+FEATURE_STATS_PATH = Path(os.environ.get("FEATURE_STATS_PATH", "models/feature_stats.json"))
 
 LABEL_VALUES = sorted(LABEL_NAMES)
 ALLOWED_GROUNDING_DOMAINS = ["acog.org", "ncbi.nlm.nih.gov", "nih.gov", "mayoclinic.org"]
 DISCLAIMER = "Research prototype, not medical advice."
 
-_MODEL_STATE: dict = {"booster": None, "feature_columns": None}
+_MODEL_STATE: dict = {"booster": None, "feature_columns": None, "feature_stats": None}
 _explain_cache: dict[tuple, dict] = {}
 
 
@@ -55,12 +56,22 @@ def _load_model_and_features() -> tuple[lgb.Booster, list[str]]:
     return booster, feature_columns
 
 
+def _load_feature_stats() -> dict:
+    """Population mean/std per raw feature (scripts/make_feature_stats.py).
+    Missing file degrades to {} -- the _pz/_roll3 fallback just no-ops."""
+    if not FEATURE_STATS_PATH.exists():
+        return {}
+    return json.loads(FEATURE_STATS_PATH.read_text())
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     _MODEL_STATE["booster"], _MODEL_STATE["feature_columns"] = _load_model_and_features()
+    _MODEL_STATE["feature_stats"] = _load_feature_stats()
     yield
     _MODEL_STATE["booster"] = None
     _MODEL_STATE["feature_columns"] = None
+    _MODEL_STATE["feature_stats"] = None
 
 
 app = FastAPI(title="mcPHASES Cycle-Phase API", lifespan=lifespan)
@@ -118,6 +129,40 @@ def _build_feature_row(features: dict, feature_columns: list[str]) -> pd.DataFra
     return df
 
 
+def _fill_derived_features(features: dict, feature_columns: list[str], feature_stats: dict) -> dict:
+    """Fill missing _pz (population z-score, NOT the participant's own baseline
+    -- see README) and _roll3 (single-day proxy: just the raw value) derived
+    features from raw values already present in the request. Only fills what's
+    missing -- never overwrites a caller-provided value, so a full feature row
+    (e.g. from the sample days) passes through unchanged."""
+    filled = dict(features)
+
+    for col in feature_columns:
+        if col.endswith("_pz"):
+            if filled.get(col) is not None:
+                continue
+            base_col = col[: -len("_pz")]
+            base_value = filled.get(base_col)
+            stats = feature_stats.get(base_col)
+            if base_value is None or not stats:
+                continue
+            mean, std = stats.get("mean"), stats.get("std")
+            if mean is None or not std:  # skip if std is 0/None
+                continue
+            try:
+                filled[col] = (float(base_value) - mean) / std
+            except (TypeError, ValueError):
+                continue
+        elif col.endswith("_roll3"):
+            if filled.get(col) is not None:
+                continue
+            base_value = filled.get(col[: -len("_roll3")])
+            if base_value is not None:
+                filled[col] = base_value
+
+    return filled
+
+
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok"}
@@ -127,8 +172,10 @@ def health() -> dict:
 def predict(request: PredictRequest) -> dict:
     booster = _MODEL_STATE["booster"]
     feature_columns = _MODEL_STATE["feature_columns"]
+    feature_stats = _MODEL_STATE["feature_stats"] or {}
 
-    row = _build_feature_row(request.features, feature_columns)
+    filled_features = _fill_derived_features(request.features, feature_columns, feature_stats)
+    row = _build_feature_row(filled_features, feature_columns)
     proba = booster.predict(row)[0]
     predicted_idx = int(np.argmax(proba))
     predicted_label = LABEL_NAMES[LABEL_VALUES[predicted_idx]]
@@ -138,7 +185,7 @@ def predict(request: PredictRequest) -> dict:
         for label_value, p in zip(LABEL_VALUES, proba)
     }
 
-    drivers = explain_one(request.features, model_path=str(MODEL_PATH), top_k=5)
+    drivers = explain_one(filled_features, model_path=str(MODEL_PATH), top_k=5)
     top_drivers = [
         {
             "feature": d["feature"],
@@ -179,15 +226,20 @@ def _template_sentence(phase_label: str, top_drivers: list[dict]) -> str:
     return f"The model predicts the {phase_label} phase."
 
 
+GROQ_BASE_URL = "https://api.groq.com/openai/v1"
+GROQ_MODEL = "llama-3.3-70b-versatile"
+
+
 def _openai_phrase(phase_label: str, top_drivers: list[dict], snippet: str | None) -> str:
-    api_key = os.environ.get("OPENAI_API_KEY")
+    api_key = os.environ.get("GROQ_API_KEY")
     if not api_key:
+        print("[llm] GROQ_API_KEY not set — using template fallback")
         return _template_sentence(phase_label, top_drivers)
 
     try:
         from openai import OpenAI
 
-        client = OpenAI(api_key=api_key)
+        client = OpenAI(api_key=api_key, base_url=GROQ_BASE_URL)
         driver_text = (
             ", ".join(f"{d['feature']} ({d['direction']})" for d in top_drivers[:5]) or "no drivers provided"
         )
@@ -199,7 +251,7 @@ def _openai_phrase(phase_label: str, top_drivers: list[dict], snippet: str | Non
             "using ONLY the medical reference context above. Do not add unsupported medical claims."
         )
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=GROQ_MODEL,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=120,
             temperature=0.3,

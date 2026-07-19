@@ -84,7 +84,7 @@ def test_phase_question_triggers_predict_phase_tool(monkeypatch):
         return {"phase_label": "Luteal", "probabilities": {"Luteal": 0.7}}
 
     monkeypatch.setattr(agent, "predict_phase", fake_predict_phase)
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
     monkeypatch.setattr(agent, "_create_openai_client", lambda: _ScriptedFakeClient([
         _FakeMessage(tool_calls=[_FakeToolCall("call_1", "predict_phase", "{}")]),
         _FakeMessage(content="You're likely in the luteal phase."),
@@ -102,7 +102,7 @@ def test_phase_question_triggers_predict_phase_tool(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_disclaimer_always_appended_to_llm_answer(monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
     monkeypatch.setattr(agent, "_create_openai_client", lambda: _ScriptedFakeClient([
         _FakeMessage(content="This is a plain answer with no disclaimer text at all."),
     ]))
@@ -113,7 +113,7 @@ def test_disclaimer_always_appended_to_llm_answer(monkeypatch):
 
 
 def test_disclaimer_present_in_templated_fallback(monkeypatch):
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
     monkeypatch.setattr(agent, "predict_phase", lambda features: {
         "phase_label": "Follicular", "probabilities": {"Follicular": 0.5},
     })
@@ -128,7 +128,7 @@ def test_disclaimer_present_in_templated_fallback(monkeypatch):
 
 
 def test_disclaimer_present_when_declining_diagnosis_request(monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
     result = agent.answer_question("Can you diagnose me and prescribe treatment?", {"resting_hr": 60.0})
 
     assert agent.DISCLAIMER in result["answer"]
@@ -147,7 +147,7 @@ def test_agent_stops_at_tool_call_cap(monkeypatch):
         return {"snippet": "info", "source_url": "https://acog.org/example", "source_title": "ACOG"}
 
     monkeypatch.setattr(agent, "search_medical", fake_search_medical)
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
 
     fake_client = _AggressiveFakeClient()
     monkeypatch.setattr(agent, "_create_openai_client", lambda: fake_client)
@@ -191,7 +191,7 @@ def client(monkeypatch):
 
 
 def test_ask_with_both_keys_unset_uses_template(client, monkeypatch):
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
     monkeypatch.delenv("TAVILY_API_KEY", raising=False)
 
     response = client.post("/ask", json={
@@ -208,7 +208,7 @@ def test_ask_with_both_keys_unset_uses_template(client, monkeypatch):
 
 
 def test_ask_returns_200_with_correct_shape(client, monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
     monkeypatch.setattr(agent, "_create_openai_client", lambda: _ScriptedFakeClient([
         _FakeMessage(content="You're likely in the luteal phase based on the data provided."),
     ]))

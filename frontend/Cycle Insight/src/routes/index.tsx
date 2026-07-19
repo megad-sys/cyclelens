@@ -14,10 +14,10 @@ const USE_MOCK = false;
 type PhaseLabel = "Menstrual" | "Follicular" | "Fertility" | "Luteal";
 
 type Features = {
-  wrist_temp_dev: number;
+  nightly_temperature: number;
   hrv_rmssd: number;
   resting_hr: number;
-  sleep_score: number;
+  sleep_score_overall: number;
   respiratory_rate: number;
   glucose_mean: number;
   steps_total: number;
@@ -38,7 +38,7 @@ type AskResponse = { answer: string; source_url: string };
 // ---------- Mock backend ----------
 function mockPredict(features: Features): PredictResponse {
   // Simple heuristics so predictions vary with sliders.
-  const t = features.wrist_temp_dev;
+  const t = features.nightly_temperature - 34.0; // deviation from an approximate population baseline
   const hrv = features.hrv_rmssd;
   const rhr = features.resting_hr;
   const cramps = features.cramps;
@@ -53,7 +53,7 @@ function mockPredict(features: Features): PredictResponse {
   const label = (Object.entries(probs) as [PhaseLabel, number][]).sort((a, b) => b[1] - a[1])[0][0];
 
   const drivers: Driver[] = [
-    { feature: "wrist temp", direction: t >= 0 ? "up" : "down", weight: Math.min(0.4, Math.abs(t) + 0.05) },
+    { feature: "nightly temp", direction: t >= 0 ? "up" : "down", weight: Math.min(0.4, Math.abs(t) + 0.05) },
     { feature: "HRV rmssd", direction: hrv < 60 ? "down" : "up", weight: 0.22 },
     { feature: "resting HR", direction: rhr >= 62 ? "up" : "down", weight: 0.14 },
   ];
@@ -63,13 +63,13 @@ function mockPredict(features: Features): PredictResponse {
 function mockExplain(res: PredictResponse): ExplainResponse {
   const map: Record<PhaseLabel, string> = {
     Menstrual:
-      "Higher cramps and lower core temperature align with early follicular bleeding days.",
+      "Higher cramps and lower nightly temperature align with early follicular bleeding days.",
     Follicular:
-      "Cooler wrist temperature and higher HRV are consistent with the follicular phase.",
+      "Cooler nightly temperature and higher HRV are consistent with the follicular phase.",
     Fertility:
-      "A rising wrist temperature with elevated HRV and lower resting HR is characteristic of the peri-ovulatory window.",
+      "A rising nightly temperature with elevated HRV and lower resting HR is characteristic of the peri-ovulatory window.",
     Luteal:
-      "Elevated wrist temperature and suppressed HRV are consistent with the post-ovulatory luteal phase.",
+      "Elevated nightly temperature and suppressed HRV are consistent with the post-ovulatory luteal phase.",
   };
   return {
     sentence: map[res.phase_label],
@@ -88,10 +88,10 @@ function mockAsk(question: string): AskResponse {
   };
 }
 
-async function apiPredict(features: Features): Promise<PredictResponse> {
+async function apiPredictFeatures(features: Record<string, number>): Promise<PredictResponse> {
   if (USE_MOCK) {
     await new Promise((r) => setTimeout(r, 350));
-    return mockPredict(features);
+    return mockPredict(features as Features);
   }
   const r = await fetch(`${API_BASE_URL}/predict`, {
     method: "POST",
@@ -100,6 +100,10 @@ async function apiPredict(features: Features): Promise<PredictResponse> {
   });
   if (!r.ok) throw new Error("Prediction failed");
   return r.json();
+}
+
+async function apiPredict(features: Features): Promise<PredictResponse> {
+  return apiPredictFeatures(features);
 }
 
 async function apiExplain(res: PredictResponse): Promise<ExplainResponse> {
@@ -148,10 +152,10 @@ const SAMPLE_DAYS: SampleDay[] = [
     id: "s1",
     true_phase: "Menstrual",
     display: {
-      wrist_temp_dev: 1.0,
+      nightly_temperature: 34.56,
       hrv_rmssd: 60,
       resting_hr: 63,
-      sleep_score: 75,
+      sleep_score_overall: 75,
       respiratory_rate: 18.8,
       glucose_mean: 120,
       steps_total: 3572,
@@ -180,10 +184,10 @@ const SAMPLE_DAYS: SampleDay[] = [
     id: "s2",
     true_phase: "Fertility",
     display: {
-      wrist_temp_dev: 0.24,
+      nightly_temperature: 33.0,
       hrv_rmssd: 86,
       resting_hr: 68,
-      sleep_score: 91,
+      sleep_score_overall: 91,
       respiratory_rate: 14.6,
       glucose_mean: 118,
       steps_total: 2501,
@@ -212,10 +216,10 @@ const SAMPLE_DAYS: SampleDay[] = [
     id: "s3",
     true_phase: "Luteal",
     display: {
-      wrist_temp_dev: -0.62,
+      nightly_temperature: 33.23,
       hrv_rmssd: 112,
       resting_hr: 61,
-      sleep_score: 79,
+      sleep_score_overall: 79,
       respiratory_rate: 18.8,
       glucose_mean: 128,
       steps_total: 5463,
@@ -243,10 +247,10 @@ const SAMPLE_DAYS: SampleDay[] = [
 ];
 
 const DEFAULT_FEATURES: Features = {
-  wrist_temp_dev: 0.31,
+  nightly_temperature: 34.0,
   hrv_rmssd: 52,
   resting_hr: 61,
-  sleep_score: 78,
+  sleep_score_overall: 78,
   respiratory_rate: 15.2,
   glucose_mean: 95,
   steps_total: 7400,
@@ -264,7 +268,7 @@ const PHASE_COLORS: Record<PhaseLabel, string> = {
 };
 const PHASES: PhaseLabel[] = ["Menstrual", "Follicular", "Fertility", "Luteal"];
 
-type DataMode = "sample" | "manual";
+type DataMode = "sample" | "manual" | "upload";
 type View = "predict" | "fertile" | "ask";
 
 function CycleLens() {
@@ -281,6 +285,9 @@ function CycleLens() {
   const [explainErr, setExplainErr] = useState<string | null>(null);
   const [explainLoading, setExplainLoading] = useState(false);
 
+  const [uploadedFeatures, setUploadedFeatures] = useState<Record<string, number> | null>(null);
+  const [uploadErr, setUploadErr] = useState<string | null>(null);
+
   const activeSample = useMemo(
     () => SAMPLE_DAYS.find((s) => s.id === sampleId) ?? null,
     [sampleId],
@@ -293,20 +300,14 @@ function CycleLens() {
     }
   }, [dataMode, activeSample]);
 
-  async function handlePredict() {
+  async function runPrediction(payload: Record<string, number>) {
     setPredicting(true);
     setPredictErr(null);
     setExplain(null);
     setExplainErr(null);
     try {
-      // If sample mode, send full_features (superset). Else send sliders.
-      const payload: Features =
-        dataMode === "sample" && activeSample
-          ? ({ ...features, ...activeSample.full_features } as Features)
-          : features;
-      const res = await apiPredict(payload);
+      const res = await apiPredictFeatures(payload);
       setPrediction(res);
-      // Fire explain
       setExplainLoading(true);
       try {
         const ex = await apiExplain(res);
@@ -324,6 +325,50 @@ function CycleLens() {
     }
   }
 
+  async function handlePredict() {
+    const payload: Record<string, number> =
+      dataMode === "sample" && activeSample
+        ? ({ ...features, ...activeSample.full_features } as Record<string, number>)
+        : dataMode === "upload" && uploadedFeatures
+          ? uploadedFeatures
+          : features;
+    await runPrediction(payload);
+  }
+
+  async function handleUploadFile(file: File) {
+    setUploadErr(null);
+    setPredictErr(null);
+    setPrediction(null);
+    setExplain(null);
+    setExplainErr(null);
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text) as Record<string, unknown>;
+      const featuresPayload =
+        parsed.features && typeof parsed.features === "object" && !Array.isArray(parsed.features)
+          ? (parsed.features as Record<string, number>)
+          : (parsed as Record<string, number>);
+      setUploadedFeatures(featuresPayload);
+      await runPrediction(featuresPayload);
+    } catch (e) {
+      const message =
+        e instanceof SyntaxError
+          ? "Invalid JSON file."
+          : e instanceof Error
+            ? e.message
+            : "Upload failed.";
+      setUploadErr(message);
+      setUploadedFeatures(null);
+    }
+  }
+
+  const activeFeatures: Record<string, number> =
+    dataMode === "upload" && uploadedFeatures
+      ? uploadedFeatures
+      : dataMode === "sample" && activeSample
+        ? ({ ...features, ...activeSample.full_features } as Record<string, number>)
+        : features;
+
   return (
     <div className="min-h-screen bg-background text-foreground">
       <div className="mx-auto max-w-4xl px-5 py-10 sm:py-14">
@@ -336,6 +381,8 @@ function CycleLens() {
             sampleId={sampleId}
             setSampleId={setSampleId}
             activeSample={activeSample}
+            uploadErr={uploadErr}
+            onUploadFile={handleUploadFile}
           />
 
           <ViewSelector view={view} setView={setView} />
@@ -343,9 +390,11 @@ function CycleLens() {
           <InputPanel
             features={features}
             setFeatures={setFeatures}
-            readOnly={dataMode === "sample"}
+            readOnly={dataMode === "sample" || dataMode === "upload"}
+            hidden={dataMode === "upload"}
           />
 
+          {dataMode !== "upload" && (
           <button
             type="button"
             onClick={handlePredict}
@@ -361,6 +410,7 @@ function CycleLens() {
                   ? "Estimate fertile window"
                   : "Predict phase"}
           </button>
+          )}
 
           <ResultCard
             view={view}
@@ -370,8 +420,9 @@ function CycleLens() {
             explain={explain}
             explainErr={explainErr}
             explainLoading={explainLoading}
-            features={features}
+            features={activeFeatures as Features}
             activeSample={dataMode === "sample" ? activeSample : null}
+            dataMode={dataMode}
           />
         </main>
 
@@ -438,18 +489,22 @@ function DataSelector({
   sampleId,
   setSampleId,
   activeSample,
+  uploadErr,
+  onUploadFile,
 }: {
   dataMode: DataMode;
   setDataMode: (m: DataMode) => void;
   sampleId: string;
   setSampleId: (id: string) => void;
   activeSample: SampleDay | null;
+  uploadErr: string | null;
+  onUploadFile: (file: File) => void;
 }) {
   return (
     <Card>
       <SectionLabel n={1}>Choose your data</SectionLabel>
       <div className="inline-flex rounded-lg bg-muted p-1 text-sm">
-        {(["sample", "manual"] as DataMode[]).map((m) => {
+        {(["sample", "manual", "upload"] as DataMode[]).map((m) => {
           const active = m === dataMode;
           return (
             <button
@@ -462,7 +517,11 @@ function DataSelector({
                   : "text-muted-foreground hover:text-foreground"
               }`}
             >
-              {m === "sample" ? "Use a sample day" : "Enter readings"}
+              {m === "sample"
+                ? "Use a sample day"
+                : m === "manual"
+                  ? "Enter readings"
+                  : "Upload a day"}
             </button>
           );
         })}
@@ -499,6 +558,25 @@ function DataSelector({
         <p className="mt-3 text-sm text-muted-foreground">
           Adjust the sliders below with your own wearable readings.
         </p>
+      )}
+      {dataMode === "upload" && (
+        <div className="mt-4 space-y-2">
+          <p className="text-sm text-muted-foreground">
+            Upload a JSON file with a feature object or a <code className="text-xs">{"{ \"features\": { ... } }"}</code> wrapper.
+          </p>
+          <input
+            type="file"
+            accept=".json,application/json"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) onUploadFile(file);
+            }}
+            className="block w-full text-sm text-foreground file:mr-3 file:rounded-lg file:border-0 file:bg-muted file:px-3 file:py-2 file:text-sm file:font-medium file:text-foreground hover:file:bg-muted/80"
+          />
+          {uploadErr && (
+            <p className="text-sm text-destructive">{uploadErr}</p>
+          )}
+        </div>
       )}
     </Card>
   );
@@ -557,10 +635,10 @@ type SliderDef = {
 };
 
 const SLIDERS: SliderDef[] = [
-  { key: "wrist_temp_dev", label: "Wrist temperature deviation", unit: "°C", min: -0.6, max: 0.8, step: 0.01, decimals: 2 },
+  { key: "nightly_temperature", label: "Nightly temperature", unit: "°C", min: 33, max: 35, step: 0.05, decimals: 2 },
   { key: "hrv_rmssd", label: "HRV (rmssd)", unit: "ms", min: 20, max: 120, step: 1, decimals: 0 },
   { key: "resting_hr", label: "Resting heart rate", unit: "bpm", min: 45, max: 90, step: 1, decimals: 0 },
-  { key: "sleep_score", label: "Sleep score", min: 30, max: 100, step: 1, decimals: 0 },
+  { key: "sleep_score_overall", label: "Sleep score", min: 30, max: 100, step: 1, decimals: 0 },
   { key: "respiratory_rate", label: "Respiratory rate", unit: "/min", min: 10, max: 22, step: 0.1, decimals: 1 },
   { key: "glucose_mean", label: "Daily glucose mean", unit: "mg/dL", min: 70, max: 140, step: 1, decimals: 0 },
   { key: "steps_total", label: "Daily steps", min: 0, max: 20000, step: 100, decimals: 0 },
@@ -571,11 +649,14 @@ function InputPanel({
   features,
   setFeatures,
   readOnly,
+  hidden = false,
 }: {
   features: Features;
   setFeatures: (f: Features) => void;
   readOnly: boolean;
+  hidden?: boolean;
 }) {
+  if (hidden) return null;
   return (
     <Card>
       <div className="mb-4 flex items-center justify-between">
@@ -649,6 +730,7 @@ function ResultCard({
   explainLoading,
   features,
   activeSample,
+  dataMode,
 }: {
   view: View;
   predicting: boolean;
@@ -659,6 +741,7 @@ function ResultCard({
   explainLoading: boolean;
   features: Features;
   activeSample: SampleDay | null;
+  dataMode: DataMode;
 }) {
   if (view === "ask") {
     return <AssistantCard features={features} />;
@@ -695,7 +778,7 @@ function ResultCard({
       )}
 
       {!predicting && !predictErr && !prediction && (
-        <EmptyResult view={view} />
+        <EmptyResult view={view} dataMode={dataMode} />
       )}
 
       {!predicting && !predictErr && prediction && (
@@ -717,7 +800,14 @@ function ResultCard({
   );
 }
 
-function EmptyResult({ view }: { view: View }) {
+function EmptyResult({ view, dataMode }: { view: View; dataMode: DataMode }) {
+  if (dataMode === "upload") {
+    return (
+      <div className="rounded-lg border border-dashed border-border p-6 text-sm text-muted-foreground">
+        Upload a JSON file above to see phase prediction, drivers, and insight.
+      </div>
+    );
+  }
   return (
     <div className="rounded-lg border border-dashed border-border p-6 text-sm text-muted-foreground">
       Adjust readings and press{" "}

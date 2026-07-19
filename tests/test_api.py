@@ -18,6 +18,31 @@ def _fake_load_model_and_features():
     return _FakeBooster(), FAKE_FEATURE_COLUMNS
 
 
+# ---------------------------------------------------------------------------
+# Fixture for the on-the-fly _pz fill: a booster whose output actually
+# depends on nightly_temperature_pz / hrv_rmssd_pz, so a test can prove the
+# fill from feature_stats.json reaches the model and changes the prediction.
+# ---------------------------------------------------------------------------
+
+RESPONSIVE_FEATURE_COLUMNS = ["nightly_temperature", "nightly_temperature_pz", "hrv_rmssd", "hrv_rmssd_pz"]
+FAKE_FEATURE_STATS = {
+    "nightly_temperature": {"mean": 34.0, "std": 0.5},
+    "hrv_rmssd": {"mean": 55.0, "std": 15.0},
+}
+
+
+class _ResponsiveFakeBooster:
+    def predict(self, X):
+        temp_pz = X["nightly_temperature_pz"].fillna(0.0).to_numpy()
+        hrv_pz = X["hrv_rmssd_pz"].fillna(0.0).to_numpy()
+        score = np.clip((temp_pz - hrv_pz) * 0.1, -0.2, 0.2)
+        out = np.tile(np.array([0.25, 0.25, 0.25, 0.25]), (len(X), 1))
+        out[:, 0] -= score  # Menstrual
+        out[:, 3] += score  # Luteal
+        out = np.clip(out, 0.01, None)
+        return out / out.sum(axis=1, keepdims=True)
+
+
 def _fake_explain_one(feature_dict, model_path=None, top_k=5):
     return [
         {"feature": "resting_hr", "shap": 0.42, "value": feature_dict.get("resting_hr"), "direction": "increases"},
@@ -69,9 +94,29 @@ def test_predict_works_with_partial_feature_subset(client):
     assert abs(sum(body["probabilities"].values()) - 1.0) < 0.05
 
 
+def test_predict_probabilities_differ_with_different_temperature_and_hrv(monkeypatch):
+    # Proves the on-the-fly _pz fill (from feature_stats.json) actually reaches
+    # the model: two requests differing only in nightly_temperature/hrv_rmssd
+    # must produce different _pz values and therefore different probabilities.
+    monkeypatch.setattr(api_main, "_load_model_and_features",
+                         lambda: (_ResponsiveFakeBooster(), RESPONSIVE_FEATURE_COLUMNS))
+    monkeypatch.setattr(api_main, "_load_feature_stats", lambda: FAKE_FEATURE_STATS)
+    monkeypatch.setattr(api_main, "explain_one", lambda features, model_path=None, top_k=5: [])
+
+    with TestClient(api_main.app) as test_client:
+        low = test_client.post("/predict", json={
+            "features": {"nightly_temperature": 33.0, "hrv_rmssd": 75.0},
+        }).json()
+        high = test_client.post("/predict", json={
+            "features": {"nightly_temperature": 35.0, "hrv_rmssd": 35.0},
+        }).json()
+
+    assert low["probabilities"] != high["probabilities"]
+
+
 def test_explain_with_both_keys_unset_uses_template(client, monkeypatch):
     monkeypatch.delenv("TAVILY_API_KEY", raising=False)
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
 
     response = client.post("/explain", json={
         "phase_label": "Luteal",
@@ -113,7 +158,7 @@ def test_explain_degrades_gracefully_when_tavily_key_set_but_call_fails(client, 
     # Regression test: a key being SET but the API call itself failing (invalid/expired
     # key, no credit, rate limit, network issue) must degrade gracefully, not 500.
     monkeypatch.setenv("TAVILY_API_KEY", "invalid-key")
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
 
     class _RaisingTavilyClient:
         def __init__(self, api_key):
@@ -132,9 +177,9 @@ def test_explain_degrades_gracefully_when_tavily_key_set_but_call_fails(client, 
     assert "Research prototype, not medical advice." in body["sentence"]
 
 
-def test_explain_degrades_gracefully_when_openai_key_set_but_call_fails(client, monkeypatch):
+def test_explain_degrades_gracefully_when_groq_key_set_but_call_fails(client, monkeypatch):
     monkeypatch.delenv("TAVILY_API_KEY", raising=False)
-    monkeypatch.setenv("OPENAI_API_KEY", "invalid-key")
+    monkeypatch.setenv("GROQ_API_KEY", "invalid-key")
 
     class _RaisingOpenAIClient:
         def __init__(self, api_key):
@@ -154,7 +199,7 @@ def test_explain_degrades_gracefully_when_openai_key_set_but_call_fails(client, 
 
 def test_explain_caches_identical_requests(client, monkeypatch):
     monkeypatch.delenv("TAVILY_API_KEY", raising=False)
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
 
     payload = {
         "phase_label": "Follicular",
