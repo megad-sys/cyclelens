@@ -12,4 +12,7 @@ export default defineConfig({
     // nitro/vite builds from this
     server: { entry: "server" },
   },
+  // Default preset (outside the Lovable sandbox) is cloudflare-module, which can't run as a
+  // plain `node server.js` process. Render is a generic Node host, so pin the Node preset.
+  nitro: { preset: "node-server" },
 });
