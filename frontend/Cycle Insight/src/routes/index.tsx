@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { CyclePhaseViz } from "@/components/CyclePhaseViz";
 
 export const Route = createFileRoute("/")({
   component: CycleLens,
@@ -423,13 +424,21 @@ function CycleLens() {
         ? buildSamplePayload(activeSample, features)
         : features;
 
+  const scrollToSection = useCallback((sectionId: string) => {
+    let el = document.getElementById(sectionId);
+    if (!el && sectionId === "section-run") {
+      el = document.getElementById("section-4") ?? document.getElementById("section-3");
+    }
+    el?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, []);
+
   return (
     <div className="min-h-screen bg-background text-foreground">
       <div className="mx-auto max-w-4xl px-5 py-10 sm:py-14">
-        <Header />
+        <Header onJump={scrollToSection} />
 
         <main className="mt-10 space-y-8">
-          <PageSection n={1} title="Choose your data">
+          <PageSection n={1} title="Choose your data" id="section-1">
             <DataSelector
               dataMode={dataMode}
               setDataMode={setDataMode}
@@ -441,11 +450,11 @@ function CycleLens() {
             />
           </PageSection>
 
-          <PageSection n={2} title="What do you want to know?">
+          <PageSection n={2} title="What do you want to know?" id="section-2">
             <ViewSelector view={view} setView={setView} />
           </PageSection>
 
-          <PageSection n={3} title="Wearable readings">
+          <PageSection n={3} title="Wearable readings" id="section-3">
             <InputPanel
               features={features}
               setFeatures={setFeatures}
@@ -456,6 +465,7 @@ function CycleLens() {
 
           {dataMode !== "upload" && (
             <button
+              id="section-run"
               type="button"
               onClick={handlePredict}
               disabled={predicting}
@@ -472,7 +482,7 @@ function CycleLens() {
             </button>
           )}
 
-          <PageSection n={4} title="Results">
+          <PageSection n={4} title="Results" id="section-4">
             <ResultCard
               view={view}
               predicting={predicting}
@@ -494,55 +504,62 @@ function CycleLens() {
   );
 }
 
-function Header() {
+function Header({ onJump }: { onJump: (sectionId: string) => void }) {
   const steps = [
-    { n: 1, title: "Add data", sub: "Enter readings, upload JSON, or try a sample day" },
-    { n: 2, title: "Pick a view", sub: "Phase prediction, fertile window, or chat" },
-    { n: 3, title: "Run & explore", sub: "Predict, read drivers, nudge sliders" },
+    { n: 1, title: "Add data", sub: "Enter readings, upload JSON, or try a sample day", target: "section-1" },
+    { n: 2, title: "Pick a view", sub: "Phase prediction, fertile window, or chat", target: "section-2" },
+    { n: 3, title: "Run & explore", sub: "Predict, read drivers, nudge sliders", target: "section-run" },
   ];
   return (
     <header className="text-center sm:text-left">
-      <div className="inline-flex items-center gap-2">
-        <div
-          className="h-9 w-9 rounded-xl"
-          style={{
-            background:
-              "conic-gradient(from 220deg, #CECBF6, #7F77DD, #534AB7, #AFA9EC, #CECBF6)",
-          }}
-          aria-hidden
-        />
-        <span className="text-sm font-semibold tracking-widest uppercase text-muted-foreground">
-          CycleLens
-        </span>
-      </div>
-      <h1
-        className="mt-4 text-3xl sm:text-5xl leading-tight tracking-tight text-foreground"
-        style={{ fontFamily: "var(--font-display)", fontWeight: 600 }}
-      >
-        Read your cycle phase from your wearable
-        <span className="block text-muted-foreground italic">— no hormone test.</span>
-      </h1>
-      <p className="mt-3 max-w-2xl text-sm text-muted-foreground">
-        Wearable signals in → cycle phase out. Follow the four sections below, or use the quick guide.
-      </p>
-      <div className="mt-6 grid gap-3 sm:grid-cols-3">
-        {steps.map((s) => (
-          <div
-            key={s.n}
-            className="rounded-xl border border-border bg-card/60 p-4 text-left"
-          >
-            <div className="flex items-center gap-2">
-              <span
-                className="inline-flex h-6 w-6 items-center justify-center rounded-full text-[11px] font-semibold text-white"
-                style={{ backgroundColor: "var(--brand-primary)" }}
-              >
-                {s.n}
-              </span>
-              <span className="text-sm font-semibold text-foreground">{s.title}</span>
-            </div>
-            <p className="mt-2 text-xs text-muted-foreground">{s.sub}</p>
+      <div className="grid items-center gap-8 lg:grid-cols-[1fr,min(280px,100%)]">
+        <div>
+          <div className="inline-flex items-center gap-2">
+            <div
+              className="h-9 w-9 rounded-xl"
+              style={{
+                background:
+                  "conic-gradient(from 220deg, #CECBF6, #7F77DD, #534AB7, #AFA9EC, #CECBF6)",
+              }}
+              aria-hidden
+            />
+            <span className="text-sm font-semibold tracking-widest uppercase text-muted-foreground">
+              CycleLens
+            </span>
           </div>
-        ))}
+          <h1
+            className="mt-4 text-3xl sm:text-5xl leading-tight tracking-tight text-foreground"
+            style={{ fontFamily: "var(--font-display)", fontWeight: 600 }}
+          >
+            Read your cycle phase from your wearable
+          </h1>
+          <p className="mt-3 max-w-2xl text-sm text-muted-foreground">
+            Wearable signals in → cycle phase out. Follow the four sections below, or jump with the quick guide.
+          </p>
+          <div className="mt-6 grid gap-3 sm:grid-cols-3">
+            {steps.map((s) => (
+              <button
+                key={s.n}
+                type="button"
+                onClick={() => onJump(s.target)}
+                className="rounded-xl border border-border bg-card/60 p-4 text-left transition-all hover:border-[var(--brand-primary)] hover:bg-card hover:shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand-primary)]"
+                aria-label={`Jump to step ${s.n}: ${s.title}`}
+              >
+                <div className="flex items-center gap-2">
+                  <span
+                    className="inline-flex h-6 w-6 items-center justify-center rounded-full text-[11px] font-semibold text-white"
+                    style={{ backgroundColor: "var(--brand-primary)" }}
+                  >
+                    {s.n}
+                  </span>
+                  <span className="text-sm font-semibold text-foreground">{s.title}</span>
+                </div>
+                <p className="mt-2 text-xs text-muted-foreground">{s.sub}</p>
+              </button>
+            ))}
+          </div>
+        </div>
+        <CyclePhaseViz />
       </div>
     </header>
   );
@@ -561,14 +578,16 @@ function Card({ children, className = "" }: { children: React.ReactNode; classNa
 function PageSection({
   n,
   title,
+  id,
   children,
 }: {
   n: number;
   title: string;
+  id?: string;
   children: React.ReactNode;
 }) {
   return (
-    <section>
+    <section id={id} className="scroll-mt-6">
       <div className="mb-3 flex items-center gap-2">
         <span
           className="inline-flex h-6 w-6 items-center justify-center rounded-full text-[11px] font-semibold text-white"
