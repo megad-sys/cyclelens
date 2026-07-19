@@ -25,7 +25,7 @@ def groq_status() -> str:
 
 
 def test_groq_connection() -> str:
-    """One-shot ping at startup. Logs clearly to Render logs."""
+    """One-shot ping at startup. Logs clearly to Render logs. Never raises."""
     global _groq_status
     api_key = groq_api_key()
     if not api_key:
@@ -33,29 +33,34 @@ def test_groq_connection() -> str:
         print("[GROQ] GROQ_API_KEY not set — insights/chat will use template fallback")
         return _groq_status
 
-    from openai import OpenAI
+    try:
+        from openai import OpenAI
 
-    client = OpenAI(api_key=api_key, base_url=GROQ_BASE_URL)
-    last_error = "unknown"
-    for model in GROQ_MODELS:
-        try:
-            response = client.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": "Reply with exactly: ok"}],
-                max_tokens=5,
-                temperature=0,
-            )
-            text = (response.choices[0].message.content or "").strip()
-            _groq_status = f"ok ({model})"
-            print(f"[GROQ] startup test passed with model={model} reply={text!r}")
-            return _groq_status
-        except Exception as exc:
-            last_error = str(exc)
-            print(f"[GROQ] startup test failed model={model}: {exc}")
+        client = OpenAI(api_key=api_key, base_url=GROQ_BASE_URL)
+        last_error = "unknown"
+        for model in GROQ_MODELS:
+            try:
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": "Reply with exactly: ok"}],
+                    max_tokens=5,
+                    temperature=0,
+                )
+                text = (response.choices[0].message.content or "").strip()
+                _groq_status = f"ok ({model})"
+                print(f"[GROQ] startup test passed with model={model} reply={text!r}")
+                return _groq_status
+            except Exception as exc:
+                last_error = str(exc)
+                print(f"[GROQ] startup test failed model={model}: {exc}")
 
-    _groq_status = f"error: {last_error[:200]}"
-    print(f"[GROQ] all models failed — using template fallback. Last error: {last_error}")
-    return _groq_status
+        _groq_status = f"error: {last_error[:200]}"
+        print(f"[GROQ] all models failed — using template fallback. Last error: {last_error}")
+        return _groq_status
+    except Exception as exc:
+        _groq_status = f"error: {str(exc)[:200]}"
+        print(f"[GROQ] client init failed — using template fallback: {exc}")
+        return _groq_status
 
 
 def groq_chat_completion(*, messages: list[dict], max_tokens: int = 120, temperature: float = 0.3, **kwargs):
