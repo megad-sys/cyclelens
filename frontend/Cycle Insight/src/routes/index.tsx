@@ -139,7 +139,7 @@ async function apiAsk(question: string, features: Features): Promise<AskResponse
 }
 
 // ============================================================
-// Sample days — 3 real days.
+// Sample days — 4 real held-out test-set days (one per phase).
 // display: values shown on sliders. full_features: sent to /predict.
 // ============================================================
 type SampleDay = {
@@ -186,6 +186,37 @@ const SAMPLE_DAYS: SampleDay[] = [
   },
   {
     id: "s2",
+    true_phase: "Follicular",
+    display: {
+      nightly_temperature: 34.58,
+      hrv_rmssd: 47,
+      resting_hr: 59,
+      sleep_score_overall: 84,
+      respiratory_rate: 15.6,
+      glucose_mean: 94,
+      steps_total: 5167,
+      cramps: 0,
+    },
+    full_features: {
+      appetite: 3, exerciselevel: 2, headaches: 0, cramps: 0, sorebreasts: 0, fatigue: 0,
+      sleepissue: 0, moodswing: 0, stress: 3, foodcravings: 0, indigestion: 0, bloating: 0,
+      resting_hr: 59.083, nightly_temperature: 34.578, nightly_temperature_std: 0.62,
+      hrv_rmssd: 46.636, hrv_high_frequency: 463.57, hrv_low_frequency: 935.035,
+      respiratory_rate: 15.6, sleep_minutesasleep: 456, sleep_efficiency: 99,
+      sleep_minutes_to_fall_asleep: 0, sleep_time_in_bed: 518, sleep_score_overall: 84,
+      sleep_score_deep_minutes: 73, sleep_score_restlessness: 0.105, steps_total: 5167,
+      active_minutes_sedentary: 821, active_minutes_lightly: 108, active_minutes_moderately: 24,
+      active_minutes_very: 10, glucose_mean: 93.579, glucose_std: 22.267,
+      glucose_cv: 0.238, demographic_vo2_max: 40.63, age_of_first_menarche: 13,
+      resting_hr_pz: -1.077, nightly_temperature_pz: 0.386, nightly_temperature_std_pz: 0.852,
+      hrv_rmssd_pz: 0.532, hrv_high_frequency_pz: 0.443, hrv_low_frequency_pz: 1.19,
+      respiratory_rate_pz: -1.053, sleep_minutesasleep_pz: 0.255, sleep_efficiency_pz: 0.96,
+      sleep_score_overall_pz: 0.248, steps_total_pz: -0.202, glucose_mean_pz: -1.718,
+      demographic_vo2_max_pz: 1.328, resting_hr_roll3: 59.812, nightly_temperature_roll3: 34.199,
+    },
+  },
+  {
+    id: "s3",
     true_phase: "Fertility",
     display: {
       nightly_temperature: 33.0,
@@ -217,7 +248,7 @@ const SAMPLE_DAYS: SampleDay[] = [
     },
   },
   {
-    id: "s3",
+    id: "s4",
     true_phase: "Luteal",
     display: {
       nightly_temperature: 33.23,
@@ -276,9 +307,9 @@ type DataMode = "sample" | "manual" | "upload";
 type View = "predict" | "fertile" | "ask";
 
 function CycleLens() {
-  const [dataMode, setDataMode] = useState<DataMode>("sample");
+  const [dataMode, setDataMode] = useState<DataMode>("manual");
   const [sampleId, setSampleId] = useState<string>(SAMPLE_DAYS[0].id);
-  const [features, setFeatures] = useState<Features>(SAMPLE_DAYS[0].display);
+  const [features, setFeatures] = useState<Features>(DEFAULT_FEATURES);
   const [view, setView] = useState<View>("predict");
 
   const [predicting, setPredicting] = useState(false);
@@ -508,7 +539,7 @@ function DataSelector({
     <Card>
       <SectionLabel n={1}>Choose your data</SectionLabel>
       <div className="inline-flex rounded-lg bg-muted p-1 text-sm">
-        {(["sample", "manual", "upload"] as DataMode[]).map((m) => {
+        {(["manual", "upload", "sample"] as DataMode[]).map((m) => {
           const active = m === dataMode;
           return (
             <button
@@ -521,11 +552,11 @@ function DataSelector({
                   : "text-muted-foreground hover:text-foreground"
               }`}
             >
-              {m === "sample"
-                ? "Use a sample day"
-                : m === "manual"
-                  ? "Enter readings"
-                  : "Upload a day"}
+              {m === "manual"
+                ? "Enter readings"
+                : m === "upload"
+                  ? "Upload a day"
+                  : "Use a sample day"}
             </button>
           );
         })}
