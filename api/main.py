@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field
 
 from src.agent import answer_question
 from src.explain import explain_one
+from src.feature_labels import humanize_feature, narrative_drivers
 from src.groq_client import groq_api_key, groq_status, test_groq_connection
 from src.splits import LABEL_NAMES
 
@@ -91,6 +92,7 @@ class PredictRequest(BaseModel):
 
 class TopDriver(BaseModel):
     feature: str
+    label: str | None = None
     direction: Literal["up", "down"]
     weight: float
 
@@ -198,6 +200,7 @@ def predict(request: PredictRequest) -> dict:
     top_drivers = [
         {
             "feature": d["feature"],
+            "label": humanize_feature(d["feature"]),
             "direction": "up" if d["shap"] >= 0 else "down",
             "weight": round(abs(d["shap"]), 4),
         }
@@ -230,9 +233,17 @@ def _tavily_search(query: str) -> dict | None:
 
 def _template_sentence(phase_label: str, top_drivers: list[dict]) -> str:
     if top_drivers:
-        driver_names = ", ".join(d["feature"] for d in top_drivers[:3])
-        return f"Based on {driver_names}, the model predicts the {phase_label} phase."
+        names = ", ".join(d.get("label") or humanize_feature(d["feature"]) for d in narrative_drivers(top_drivers))
+        return f"Based on {names}, the model predicts the {phase_label} phase."
     return f"The model predicts the {phase_label} phase."
+
+
+def _driver_text(top_drivers: list[dict]) -> str:
+    parts = []
+    for d in narrative_drivers(top_drivers, top_k=5):
+        name = d.get("label") or humanize_feature(d["feature"])
+        parts.append(f"{name} ({d['direction']})")
+    return ", ".join(parts) or "no drivers provided"
 
 
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
@@ -246,15 +257,14 @@ def _openai_phrase(phase_label: str, top_drivers: list[dict], snippet: str | Non
     try:
         from src.groq_client import groq_chat_completion
 
-        driver_text = (
-            ", ".join(f"{d['feature']} ({d['direction']})" for d in top_drivers[:5]) or "no drivers provided"
-        )
+        driver_text = _driver_text(top_drivers)
         context = snippet or "no external medical reference is available"
         prompt = (
             f"A wearable-based model predicts the menstrual cycle phase '{phase_label}', driven mainly by: "
             f"{driver_text}. Medical reference context: {context}\n\n"
             "Write ONE plain-language sentence explaining why these wearable signals point to this phase, "
-            "using ONLY the medical reference context above. Do not add unsupported medical claims."
+            "using ONLY the medical reference context above. Use plain English only — never mention raw "
+            "column names, _pz, _roll3, or statistical jargon. Do not add unsupported medical claims."
         )
         response = groq_chat_completion(
             messages=[{"role": "user", "content": prompt}],
@@ -270,11 +280,15 @@ def _openai_phrase(phase_label: str, top_drivers: list[dict], snippet: str | Non
 @app.post("/explain", response_model=ExplainResponse)
 def explain(request: ExplainRequest) -> dict:
     top_drivers = [d.model_dump() for d in request.top_drivers]
+    for d in top_drivers:
+        if not d.get("label"):
+            d["label"] = humanize_feature(d["feature"])
     cache_key = (request.phase_label, tuple((d["feature"], d["direction"], d["weight"]) for d in top_drivers))
     if cache_key in _explain_cache:
         return _explain_cache[cache_key]
 
-    top_driver_name = top_drivers[0]["feature"] if top_drivers else ""
+    narr = narrative_drivers(top_drivers)
+    top_driver_name = (narr[0].get("label") or humanize_feature(narr[0]["feature"])) if narr else ""
     grounding = _tavily_search(f"{request.phase_label} menstrual cycle phase physiology {top_driver_name}")
     snippet = grounding["snippet"] if grounding else None
 

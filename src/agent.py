@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 
 from src.explain import DEFAULT_MODEL_PATH, LABEL_NAMES, LABEL_VALUES, _get_explainer, explain_one
+from src.feature_labels import humanize_feature, narrative_drivers
 from src.groq_client import groq_api_key, groq_chat_completion
 
 DISCLAIMER = "Research prototype, not medical advice."
@@ -82,7 +83,9 @@ def _is_substantive(text: str) -> bool:
 def _templated_answer(features: dict, question: str | None = None) -> dict[str, Any]:
     prediction = predict_phase(features)
     drivers = explain_prediction(features)["top_drivers"]
-    driver_text = ", ".join(d["feature"] for d in drivers[:3]) if drivers else "the provided signals"
+    driver_text = ", ".join(
+        humanize_feature(d["feature"]) for d in narrative_drivers(drivers)
+    ) or "the provided signals"
     probs = prediction["probabilities"]
     fertility = probs.get("Fertility", 0)
     extra = ""
@@ -100,7 +103,8 @@ def _direct_answer(question: str, features: dict) -> dict[str, Any]:
     prediction = predict_phase(features)
     drivers = explain_prediction(features)["top_drivers"][:5]
     driver_summary = ", ".join(
-        f"{d['feature']} ({'↑' if d.get('shap', 0) >= 0 else '↓'})" for d in drivers[:3]
+        f"{humanize_feature(d['feature'])} ({'higher' if d.get('shap', 0) >= 0 else 'lower'})"
+        for d in narrative_drivers(drivers)
     ) or "no strong drivers"
 
     grounding = search_medical(f"{question} menstrual cycle phase physiology fertility ovulation")
@@ -120,7 +124,8 @@ def _direct_answer(question: str, features: dict) -> dict[str, Any]:
         "Use the model probabilities and drivers above; if they ask about ovulation, "
         "focus on the Fertility probability. You may use the medical snippet for physiology "
         "context only — do not invent facts beyond it. Do not diagnose or prescribe. "
-        "Do NOT include any disclaimer — the app adds one automatically."
+        "Use plain English only — never mention raw column names, _pz, _roll3, VO₂ max codes, "
+        "or statistical jargon. Do NOT include any disclaimer — the app adds one automatically."
     )
 
     response = groq_chat_completion(

@@ -24,7 +24,7 @@ type Features = {
   cramps: number;
 };
 
-type Driver = { feature: string; direction: "up" | "down"; weight: number };
+type Driver = { feature: string; label?: string; direction: "up" | "down"; weight: number };
 
 type PredictResponse = {
   phase_label: PhaseLabel;
@@ -281,6 +281,25 @@ const SAMPLE_DAYS: SampleDay[] = [
   },
 ];
 
+const SLIDER_KEYS: (keyof Features)[] = [
+  "nightly_temperature", "hrv_rmssd", "resting_hr", "sleep_score_overall",
+  "respiratory_rate", "glucose_mean", "steps_total", "cramps",
+];
+
+function buildSamplePayload(sample: SampleDay, display: Features): Record<string, number> {
+  const payload = { ...sample.full_features };
+  for (const key of SLIDER_KEYS) {
+    payload[key] = display[key];
+  }
+  return payload;
+}
+
+const DEMO_SCRIPT = [
+  "Pick a sample day (real held-out test data).",
+  "Click Predict and compare to the true phase badge.",
+  "Nudge sliders to see how the 8 main signals shift the prediction.",
+];
+
 const DEFAULT_FEATURES: Features = {
   nightly_temperature: 34.0,
   hrv_rmssd: 52,
@@ -363,7 +382,7 @@ function CycleLens() {
   async function handlePredict() {
     const payload: Record<string, number> =
       dataMode === "sample" && activeSample
-        ? ({ ...features, ...activeSample.full_features } as Record<string, number>)
+        ? buildSamplePayload(activeSample, features)
         : dataMode === "upload" && uploadedFeatures
           ? uploadedFeatures
           : features;
@@ -401,7 +420,7 @@ function CycleLens() {
     dataMode === "upload" && uploadedFeatures
       ? uploadedFeatures
       : dataMode === "sample" && activeSample
-        ? ({ ...features, ...activeSample.full_features } as Record<string, number>)
+        ? buildSamplePayload(activeSample, features)
         : features;
 
   return (
@@ -409,56 +428,64 @@ function CycleLens() {
       <div className="mx-auto max-w-4xl px-5 py-10 sm:py-14">
         <Header />
 
-        <main className="mt-10 space-y-6">
-          <DataSelector
-            dataMode={dataMode}
-            setDataMode={setDataMode}
-            sampleId={sampleId}
-            setSampleId={setSampleId}
-            activeSample={activeSample}
-            uploadErr={uploadErr}
-            onUploadFile={handleUploadFile}
-          />
+        <main className="mt-10 space-y-8">
+          <PageSection n={1} title="Choose your data">
+            <DataSelector
+              dataMode={dataMode}
+              setDataMode={setDataMode}
+              sampleId={sampleId}
+              setSampleId={setSampleId}
+              activeSample={activeSample}
+              uploadErr={uploadErr}
+              onUploadFile={handleUploadFile}
+            />
+          </PageSection>
 
-          <ViewSelector view={view} setView={setView} />
+          <PageSection n={2} title="What do you want to know?">
+            <ViewSelector view={view} setView={setView} />
+          </PageSection>
 
-          <InputPanel
-            features={features}
-            setFeatures={setFeatures}
-            readOnly={dataMode === "sample" || dataMode === "upload"}
-            hidden={dataMode === "upload"}
-          />
+          <PageSection n={3} title="Wearable readings">
+            <InputPanel
+              features={features}
+              setFeatures={setFeatures}
+              dataMode={dataMode}
+              hidden={dataMode === "upload"}
+            />
+          </PageSection>
 
           {dataMode !== "upload" && (
-          <button
-            type="button"
-            onClick={handlePredict}
-            disabled={predicting}
-            className="w-full rounded-xl px-5 py-3.5 text-sm font-semibold text-white shadow-sm transition-all disabled:opacity-60 disabled:cursor-not-allowed hover:brightness-110 active:brightness-95"
-            style={{ backgroundColor: "var(--brand-primary)" }}
-          >
-            {predicting
-              ? "Analyzing…"
-              : view === "ask"
-                ? "Update readings"
-                : view === "fertile"
-                  ? "Estimate fertile window"
-                  : "Predict phase"}
-          </button>
+            <button
+              type="button"
+              onClick={handlePredict}
+              disabled={predicting}
+              className="w-full rounded-xl px-5 py-3.5 text-sm font-semibold text-white shadow-sm transition-all disabled:opacity-60 disabled:cursor-not-allowed hover:brightness-110 active:brightness-95"
+              style={{ backgroundColor: "var(--brand-primary)" }}
+            >
+              {predicting
+                ? "Analyzing…"
+                : view === "ask"
+                  ? "Update readings"
+                  : view === "fertile"
+                    ? "Estimate fertile window"
+                    : "Predict phase"}
+            </button>
           )}
 
-          <ResultCard
-            view={view}
-            predicting={predicting}
-            predictErr={predictErr}
-            prediction={prediction}
-            explain={explain}
-            explainErr={explainErr}
-            explainLoading={explainLoading}
-            features={activeFeatures as Features}
-            activeSample={dataMode === "sample" ? activeSample : null}
-            dataMode={dataMode}
-          />
+          <PageSection n={4} title="Results">
+            <ResultCard
+              view={view}
+              predicting={predicting}
+              predictErr={predictErr}
+              prediction={prediction}
+              explain={explain}
+              explainErr={explainErr}
+              explainLoading={explainLoading}
+              features={activeFeatures as Features}
+              activeSample={dataMode === "sample" ? activeSample : null}
+              dataMode={dataMode}
+            />
+          </PageSection>
         </main>
 
         <Footer />
@@ -468,6 +495,11 @@ function CycleLens() {
 }
 
 function Header() {
+  const steps = [
+    { n: 1, title: "Add data", sub: "Enter readings, upload JSON, or try a sample day" },
+    { n: 2, title: "Pick a view", sub: "Phase prediction, fertile window, or chat" },
+    { n: 3, title: "Run & explore", sub: "Predict, read drivers, nudge sliders" },
+  ];
   return (
     <header className="text-center sm:text-left">
       <div className="inline-flex items-center gap-2">
@@ -490,6 +522,28 @@ function Header() {
         Read your cycle phase from your wearable
         <span className="block text-muted-foreground italic">— no hormone test.</span>
       </h1>
+      <p className="mt-3 max-w-2xl text-sm text-muted-foreground">
+        Wearable signals in → cycle phase out. Follow the four sections below, or use the quick guide.
+      </p>
+      <div className="mt-6 grid gap-3 sm:grid-cols-3">
+        {steps.map((s) => (
+          <div
+            key={s.n}
+            className="rounded-xl border border-border bg-card/60 p-4 text-left"
+          >
+            <div className="flex items-center gap-2">
+              <span
+                className="inline-flex h-6 w-6 items-center justify-center rounded-full text-[11px] font-semibold text-white"
+                style={{ backgroundColor: "var(--brand-primary)" }}
+              >
+                {s.n}
+              </span>
+              <span className="text-sm font-semibold text-foreground">{s.title}</span>
+            </div>
+            <p className="mt-2 text-xs text-muted-foreground">{s.sub}</p>
+          </div>
+        ))}
+      </div>
     </header>
   );
 }
@@ -504,17 +558,28 @@ function Card({ children, className = "" }: { children: React.ReactNode; classNa
   );
 }
 
-function SectionLabel({ n, children }: { n: number; children: React.ReactNode }) {
+function PageSection({
+  n,
+  title,
+  children,
+}: {
+  n: number;
+  title: string;
+  children: React.ReactNode;
+}) {
   return (
-    <div className="mb-4 flex items-center gap-2">
-      <span
-        className="inline-flex h-6 w-6 items-center justify-center rounded-full text-[11px] font-semibold text-white"
-        style={{ backgroundColor: "var(--brand-primary)" }}
-      >
-        {n}
-      </span>
-      <h2 className="text-sm font-semibold tracking-wide text-foreground">{children}</h2>
-    </div>
+    <section>
+      <div className="mb-3 flex items-center gap-2">
+        <span
+          className="inline-flex h-6 w-6 items-center justify-center rounded-full text-[11px] font-semibold text-white"
+          style={{ backgroundColor: "var(--brand-primary)" }}
+        >
+          {n}
+        </span>
+        <h2 className="text-sm font-semibold tracking-wide text-foreground">{title}</h2>
+      </div>
+      {children}
+    </section>
   );
 }
 
@@ -537,7 +602,6 @@ function DataSelector({
 }) {
   return (
     <Card>
-      <SectionLabel n={1}>Choose your data</SectionLabel>
       <div className="inline-flex rounded-lg bg-muted p-1 text-sm">
         {(["manual", "upload", "sample"] as DataMode[]).map((m) => {
           const active = m === dataMode;
@@ -563,30 +627,45 @@ function DataSelector({
       </div>
 
       {dataMode === "sample" && (
-        <div className="mt-4 flex flex-wrap items-center gap-3">
-          <select
-            value={sampleId}
-            onChange={(e) => setSampleId(e.target.value)}
-            className="rounded-lg border border-border bg-card px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-[var(--brand-primary)]"
-          >
-            {SAMPLE_DAYS.map((s, i) => (
-              <option key={s.id} value={s.id}>
-                Day {i + 1} — {s.true_phase}
-              </option>
-            ))}
-          </select>
-          {activeSample && (
-            <span
-              className="inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium"
-              style={{
-                backgroundColor: "color-mix(in oklab, var(--brand-primary) 10%, white)",
-                color: "var(--brand-primary)",
-              }}
+        <div className="mt-4 space-y-3">
+          <div className="flex flex-wrap items-center gap-3">
+            <select
+              value={sampleId}
+              onChange={(e) => setSampleId(e.target.value)}
+              className="rounded-lg border border-border bg-card px-3 py-2 text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-[var(--brand-primary)]"
             >
-              <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: PHASE_COLORS[activeSample.true_phase] }} />
-              true phase: {activeSample.true_phase}
-            </span>
-          )}
+              {SAMPLE_DAYS.map((s, i) => (
+                <option key={s.id} value={s.id}>
+                  Day {i + 1} — {s.true_phase}
+                </option>
+              ))}
+            </select>
+            {activeSample && (
+              <span
+                className="inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium"
+                style={{
+                  backgroundColor: "color-mix(in oklab, var(--brand-primary) 10%, white)",
+                  color: "var(--brand-primary)",
+                }}
+              >
+                <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: PHASE_COLORS[activeSample.true_phase] }} />
+                true phase: {activeSample.true_phase}
+              </span>
+            )}
+          </div>
+          <div
+            className="rounded-lg border border-border/80 p-3 text-sm"
+            style={{ backgroundColor: "color-mix(in oklab, var(--brand-primary) 4%, white)" }}
+          >
+            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              Demo tip
+            </p>
+            <ol className="mt-2 list-decimal space-y-1 pl-4 text-muted-foreground">
+              {DEMO_SCRIPT.map((line) => (
+                <li key={line}>{line}</li>
+              ))}
+            </ol>
+          </div>
         </div>
       )}
       {dataMode === "manual" && (
@@ -625,7 +704,6 @@ function ViewSelector({ view, setView }: { view: View; setView: (v: View) => voi
   ];
   return (
     <Card>
-      <SectionLabel n={2}>What do you want to know?</SectionLabel>
       <div className="grid gap-3 sm:grid-cols-3">
         {opts.map((o) => {
           const active = o.id === view;
@@ -683,21 +761,26 @@ const SLIDERS: SliderDef[] = [
 function InputPanel({
   features,
   setFeatures,
-  readOnly,
+  dataMode,
   hidden = false,
 }: {
   features: Features;
   setFeatures: (f: Features) => void;
-  readOnly: boolean;
+  dataMode: DataMode;
   hidden?: boolean;
 }) {
   if (hidden) return null;
+  const readOnly = dataMode === "upload";
   return (
     <Card>
-      <div className="mb-4 flex items-center justify-between">
-        <h2 className="text-sm font-semibold tracking-wide text-foreground">Readings</h2>
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <p className="text-sm text-muted-foreground">
+          {dataMode === "sample"
+            ? "Sliders are live — tweak the 8 main signals while the rest of the sample day stays fixed."
+            : "Adjust sliders with your own wearable readings."}
+        </p>
         {readOnly && (
-          <span className="text-xs text-muted-foreground">Sample values — switch to manual to edit</span>
+          <span className="shrink-0 text-xs text-muted-foreground">From upload</span>
         )}
       </div>
       <div className="grid gap-x-8 gap-y-5 sm:grid-cols-2">
@@ -958,7 +1041,7 @@ function DriverRow({ drivers }: { drivers: Driver[] }) {
             }}
           >
             <span aria-hidden>{d.direction === "up" ? "↑" : "↓"}</span>
-            {d.feature}
+            {d.label ?? d.feature}
           </span>
         ))}
       </div>
