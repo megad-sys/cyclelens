@@ -1,4 +1,3 @@
-import json
 from types import SimpleNamespace
 
 import numpy as np
@@ -9,121 +8,79 @@ import api.main as api_main
 import src.agent as agent
 
 
-# ---------------------------------------------------------------------------
-# Fake OpenAI client scaffolding (mirrors the real SDK's response shape just
-# enough for src.agent's loop -- .choices[0].message.{content,tool_calls},
-# message.model_dump(), tool_call.id / .function.{name,arguments}).
-# ---------------------------------------------------------------------------
-
-class _FakeToolCall:
-    def __init__(self, call_id: str, name: str, arguments: str):
-        self.id = call_id
-        self.function = SimpleNamespace(name=name, arguments=arguments)
-
-
 class _FakeMessage:
-    def __init__(self, content=None, tool_calls=None):
+    def __init__(self, content):
         self.content = content
-        self.tool_calls = tool_calls
-
-    def model_dump(self, exclude_none=True):
-        d = {"role": "assistant", "content": self.content, "tool_calls": None}
-        if self.tool_calls:
-            d["tool_calls"] = [
-                {"id": tc.id, "type": "function",
-                 "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
-                for tc in self.tool_calls
-            ]
-        return {k: v for k, v in d.items() if v is not None} if exclude_none else d
 
 
 class _FakeResponse:
-    def __init__(self, message: _FakeMessage):
-        self.choices = [SimpleNamespace(message=message)]
+    def __init__(self, content: str):
+        self.choices = [SimpleNamespace(message=_FakeMessage(content))]
 
 
-class _ScriptedFakeClient:
-    """Plays back a fixed sequence of messages, one per .create() call."""
-
-    def __init__(self, messages: list[_FakeMessage]):
-        self._messages = list(messages)
-        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
-
-    def _create(self, **kwargs):
-        assert self._messages, "fake client ran out of scripted responses"
-        return _FakeResponse(self._messages.pop(0))
-
-
-class _AggressiveFakeClient:
-    """Always wants to call search_medical when tools are allowed; only
-    answers with text once forced via tool_choice='none' -- simulates a
-    model that would happily call tools forever if not capped."""
-
-    def __init__(self):
-        self.tool_choices_seen: list[str] = []
-        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
-
-    def _create(self, tool_choice, **kwargs):
-        self.tool_choices_seen.append(tool_choice)
-        if tool_choice == "none":
-            return _FakeResponse(_FakeMessage(content="Final answer."))
-        call = _FakeToolCall(f"call_{len(self.tool_choices_seen)}", "search_medical",
-                              json.dumps({"query": "luteal phase physiology"}))
-        return _FakeResponse(_FakeMessage(tool_calls=[call]))
-
-
-# ---------------------------------------------------------------------------
-# (a) a phase question triggers predict_phase
-# ---------------------------------------------------------------------------
-
-def _fake_groq_from_client(fake_client):
+def _fake_groq(content: str):
     def _groq_chat_completion(**kwargs):
-        return fake_client._create(**kwargs)
+        return _FakeResponse(content)
     return _groq_chat_completion
 
 
-def test_phase_question_triggers_predict_phase_tool(monkeypatch):
+def test_direct_answer_calls_model_and_search(monkeypatch):
     predict_calls = []
+    search_calls = []
 
-    def fake_predict_phase(features):
-        predict_calls.append(features)
-        return {"phase_label": "Luteal", "probabilities": {"Luteal": 0.7}}
-
-    monkeypatch.setattr(agent, "predict_phase", fake_predict_phase)
+    monkeypatch.setattr(agent, "predict_phase", lambda features: (
+        predict_calls.append(features) or {
+            "phase_label": "Fertility",
+            "probabilities": {"Menstrual": 0.1, "Follicular": 0.2, "Fertility": 0.55, "Luteal": 0.15},
+        }
+    ))
+    monkeypatch.setattr(agent, "explain_prediction", lambda features: {
+        "top_drivers": [{"feature": "hrv_rmssd", "shap": 0.3, "value": 70.0, "direction": "increases"}],
+    })
+    monkeypatch.setattr(agent, "search_medical", lambda query: (
+        search_calls.append(query) or {
+            "snippet": "Ovulation typically occurs mid-cycle.",
+            "source_url": "https://www.ncbi.nlm.nih.gov/example",
+            "source_title": "Example",
+        }
+    ))
     monkeypatch.setenv("GROQ_API_KEY", "test-key")
-    fake_client = _ScriptedFakeClient([
-        _FakeMessage(tool_calls=[_FakeToolCall("call_1", "predict_phase", "{}")]),
-        _FakeMessage(content="You're likely in the luteal phase."),
-    ])
-    monkeypatch.setattr(agent, "groq_chat_completion", _fake_groq_from_client(fake_client))
+    monkeypatch.setattr(
+        agent,
+        "groq_chat_completion",
+        _fake_groq(
+            "The model assigns a 55% probability to the fertile window today, which suggests ovulation is possible but not certain."
+        ),
+    )
 
-    result = agent.answer_question("What phase am I in today?", {"resting_hr": 60.0})
+    result = agent.answer_question("Am I likely ovulating today?", {"resting_hr": 60.0})
 
     assert len(predict_calls) == 1
-    assert predict_calls[0] == {"resting_hr": 60.0}
+    assert len(search_calls) == 1
+    assert "55%" in result["answer"] or "ovulation" in result["answer"].lower() or "fertile" in result["answer"].lower()
     assert agent.DISCLAIMER in result["answer"]
+    assert result["source_url"] == "https://www.ncbi.nlm.nih.gov/example"
 
-
-# ---------------------------------------------------------------------------
-# (b) the answer always contains the disclaimer
-# ---------------------------------------------------------------------------
 
 def test_disclaimer_always_appended_to_llm_answer(monkeypatch):
     monkeypatch.setenv("GROQ_API_KEY", "test-key")
-    fake_client = _ScriptedFakeClient([
-        _FakeMessage(content="This is a plain answer with no disclaimer text at all."),
-    ])
-    monkeypatch.setattr(agent, "groq_chat_completion", _fake_groq_from_client(fake_client))
+    monkeypatch.setattr(agent, "predict_phase", lambda features: {
+        "phase_label": "Luteal", "probabilities": {"Luteal": 0.7, "Fertility": 0.1, "Follicular": 0.1, "Menstrual": 0.1},
+    })
+    monkeypatch.setattr(agent, "explain_prediction", lambda features: {"top_drivers": []})
+    monkeypatch.setattr(agent, "search_medical", lambda query: {"snippet": None, "source_url": None, "source_title": None})
+    monkeypatch.setattr(agent, "groq_chat_completion", _fake_groq("This is a plain answer with no disclaimer text at all."))
 
     result = agent.answer_question("Tell me about my cycle.", {"resting_hr": 60.0})
 
     assert agent.DISCLAIMER in result["answer"]
+    assert "plain answer" in result["answer"]
 
 
 def test_disclaimer_present_in_templated_fallback(monkeypatch):
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     monkeypatch.setattr(agent, "predict_phase", lambda features: {
-        "phase_label": "Follicular", "probabilities": {"Follicular": 0.5},
+        "phase_label": "Follicular", "probabilities": {"Follicular": 0.5, "Fertility": 0.2, "Menstrual": 0.15, "Luteal": 0.15},
     })
     monkeypatch.setattr(agent, "explain_prediction", lambda features: {
         "top_drivers": [{"feature": "resting_hr", "shap": 0.2, "value": 60.0, "direction": "increases"}],
@@ -135,6 +92,19 @@ def test_disclaimer_present_in_templated_fallback(monkeypatch):
     assert result["source_url"] is None
 
 
+def test_ovulation_question_template_mentions_fertility(monkeypatch):
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.setattr(agent, "predict_phase", lambda features: {
+        "phase_label": "Fertility",
+        "probabilities": {"Fertility": 0.44, "Follicular": 0.25, "Menstrual": 0.15, "Luteal": 0.16},
+    })
+    monkeypatch.setattr(agent, "explain_prediction", lambda features: {"top_drivers": []})
+
+    result = agent.answer_question("Am I likely ovulating today?", {"resting_hr": 60.0})
+
+    assert "44%" in result["answer"] or "fertile" in result["answer"].lower()
+
+
 def test_disclaimer_present_when_declining_diagnosis_request(monkeypatch):
     monkeypatch.setenv("GROQ_API_KEY", "test-key")
     result = agent.answer_question("Can you diagnose me and prescribe treatment?", {"resting_hr": 60.0})
@@ -142,36 +112,6 @@ def test_disclaimer_present_when_declining_diagnosis_request(monkeypatch):
     assert agent.DISCLAIMER in result["answer"]
     assert result["source_url"] is None
 
-
-# ---------------------------------------------------------------------------
-# (c) the agent stops at/under the 4-call cap
-# ---------------------------------------------------------------------------
-
-def test_agent_stops_at_tool_call_cap(monkeypatch):
-    search_calls = []
-
-    def fake_search_medical(query):
-        search_calls.append(query)
-        return {"snippet": "info", "source_url": "https://acog.org/example", "source_title": "ACOG"}
-
-    monkeypatch.setattr(agent, "search_medical", fake_search_medical)
-    monkeypatch.setenv("GROQ_API_KEY", "test-key")
-
-    fake_client = _AggressiveFakeClient()
-    monkeypatch.setattr(agent, "groq_chat_completion", _fake_groq_from_client(fake_client))
-
-    result = agent.answer_question("Tell me everything about my cycle.", {"resting_hr": 60.0})
-
-    assert len(search_calls) <= agent.MAX_TOOL_CALLS
-    assert len(search_calls) == agent.MAX_TOOL_CALLS  # the aggressive client always wants more
-    assert "none" in fake_client.tool_choices_seen  # forced to stop and answer with text
-    assert agent.DISCLAIMER in result["answer"]
-    assert result["source_url"] == "https://acog.org/example"
-
-
-# ---------------------------------------------------------------------------
-# (d), (e): /ask via the FastAPI app
-# ---------------------------------------------------------------------------
 
 class _FakeBooster:
     def predict(self, X):
@@ -190,7 +130,7 @@ def client(monkeypatch):
     monkeypatch.setattr(api_main, "_load_model_and_features", _fake_load_model_and_features)
     monkeypatch.setattr(api_main, "test_groq_connection", lambda: "test_skipped")
     monkeypatch.setattr(agent, "predict_phase", lambda features: {
-        "phase_label": "Luteal", "probabilities": {"Luteal": 0.7},
+        "phase_label": "Luteal", "probabilities": {"Luteal": 0.7, "Fertility": 0.1, "Follicular": 0.1, "Menstrual": 0.1},
     })
     monkeypatch.setattr(agent, "explain_prediction", lambda features: {
         "top_drivers": [{"feature": "resting_hr", "shap": 0.2, "value": 60.0, "direction": "increases"}],
@@ -218,10 +158,12 @@ def test_ask_with_both_keys_unset_uses_template(client, monkeypatch):
 
 def test_ask_returns_200_with_correct_shape(client, monkeypatch):
     monkeypatch.setenv("GROQ_API_KEY", "test-key")
-    fake_client = _ScriptedFakeClient([
-        _FakeMessage(content="You're likely in the luteal phase based on the data provided."),
-    ])
-    monkeypatch.setattr(agent, "groq_chat_completion", _fake_groq_from_client(fake_client))
+    monkeypatch.setattr(agent, "search_medical", lambda query: {"snippet": None, "source_url": None, "source_title": None})
+    monkeypatch.setattr(
+        agent,
+        "groq_chat_completion",
+        _fake_groq("You're likely in the luteal phase based on the wearable readings provided."),
+    )
 
     response = client.post("/ask", json={
         "question": "What phase am I in today?",
@@ -231,6 +173,5 @@ def test_ask_returns_200_with_correct_shape(client, monkeypatch):
     assert response.status_code == 200
     body = response.json()
     assert set(body.keys()) == {"answer", "source_url"}
-    assert isinstance(body["answer"], str)
-    assert body["source_url"] is None or isinstance(body["source_url"], str)
+    assert "luteal" in body["answer"].lower()
     assert agent.DISCLAIMER in body["answer"]

@@ -1,24 +1,6 @@
-"""LLM agent (Groq tool-calling via OpenAI-compatible API) that answers free-form questions about a
-single participant-day, using the trained model, SHAP explainer, and a
-Tavily-grounded medical search.
+"""Grounded Q&A for one participant-day: model prediction + SHAP drivers + Tavily, then one Groq call.
 
-Guardrails enforced IN CODE (not just prompted for):
-  - hard cap of MAX_TOOL_CALLS total tool invocations per question (the loop
-    forces tool_choice="none" once the budget is spent, so the model MUST
-    respond with text rather than call more tools).
-  - the returned source_url can only ever come from an actual search_medical()
-    result -- it is extracted from the tool's return value, never from the
-    LLM's free-text output, so it cannot be fabricated.
-  - the disclaimer is always appended by code, regardless of what the model said.
-  - diagnosis/treatment requests are intercepted by a keyword check BEFORE any
-    LLM call is made, so a decline can never be talked around by the model.
-  - predict_phase/explain_prediction always operate on the day's real features
-    (closed over, not re-supplied by the model), so the model cannot corrupt
-    the day's data by mis-transcribing a 50+ field JSON object as tool args.
-
-What is NOT mechanically enforced (an open problem, not a gap hidden here):
-whether every medical-sounding sentence in the model's free text specifically
-traces back to a search_medical result -- that relies on the system prompt.
+Uses a single LLM request (not multi-turn tool calling) for reliability on Groq/Llama.
 """
 
 from __future__ import annotations
@@ -34,60 +16,11 @@ from src.explain import DEFAULT_MODEL_PATH, LABEL_NAMES, LABEL_VALUES, _get_expl
 from src.groq_client import groq_api_key, groq_chat_completion
 
 DISCLAIMER = "Research prototype, not medical advice."
-MAX_TOOL_CALLS = 4
 ALLOWED_GROUNDING_DOMAINS = ["acog.org", "ncbi.nlm.nih.gov", "nih.gov", "mayoclinic.org"]
 
-# Simple, code-level (not prompt-level) refusal trigger for diagnosis/treatment asks.
 DIAGNOSIS_KEYWORDS = [
     "diagnos", "treatment for", "treat me", "prescri", "medication", "what drug",
     "cure for", "should i take", "birth control", "what dose",
-]
-
-SYSTEM_PROMPT = (
-    "You are a research assistant explaining a wearable-based menstrual cycle-phase "
-    "prediction model, for ONE participant-day. Tools available: predict_phase (the "
-    "model's phase probabilities for this day), explain_prediction (top-5 SHAP drivers "
-    "for this day), and search_medical (search ACOG/NCBI/NIH/Mayo Clinic for physiology "
-    "context). Rules:\n"
-    "- Ground any physiological claim in a search_medical result; do not invent physiology.\n"
-    "- You have a hard budget of at most 4 tool calls total. Use them deliberately.\n"
-    "- Never provide a diagnosis, treatment, or medication recommendation -- this is a "
-    "research prototype, not a medical device.\n"
-    "- End your answer with exactly: 'Research prototype, not medical advice.'"
-)
-
-TOOLS_SCHEMA: list[dict] = [
-    {
-        "type": "function",
-        "function": {
-            "name": "predict_phase",
-            "description": "Predict the 4 cycle-phase probabilities for the participant-day "
-                            "already provided in this conversation. Takes no arguments.",
-            "parameters": {"type": "object", "properties": {}},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "explain_prediction",
-            "description": "Get the top-5 SHAP drivers behind the model's prediction for the "
-                            "participant-day already provided in this conversation. Takes no arguments.",
-            "parameters": {"type": "object", "properties": {}},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "search_medical",
-            "description": "Search reputable medical sources (ACOG, NCBI, NIH, Mayo Clinic) "
-                            "for physiology context to ground a claim.",
-            "parameters": {
-                "type": "object",
-                "properties": {"query": {"type": "string", "description": "search query"}},
-                "required": ["query"],
-            },
-        },
-    },
 ]
 
 
@@ -100,7 +33,6 @@ def _build_row(features: dict, feature_columns: list[str]) -> pd.DataFrame:
 
 
 def predict_phase(features: dict) -> dict:
-    """Tool: model's phase probabilities for `features` (reuses the /predict path)."""
     _, booster, feature_columns = _get_explainer(str(DEFAULT_MODEL_PATH))
     row = _build_row(features, feature_columns)
     proba = booster.predict(row)[0]
@@ -110,14 +42,11 @@ def predict_phase(features: dict) -> dict:
 
 
 def explain_prediction(features: dict) -> dict:
-    """Tool: top-5 SHAP drivers for `features` (via src.explain.explain_one)."""
     drivers = explain_one(features, model_path=str(DEFAULT_MODEL_PATH), top_k=5)
     return {"top_drivers": drivers}
 
 
 def search_medical(query: str) -> dict:
-    """Tool: Tavily search restricted to reputable medical domains. Degrades to a
-    no-result dict (never raises) if TAVILY_API_KEY is unset or the search fails."""
     api_key = os.environ.get("TAVILY_API_KEY")
     if not api_key:
         return {"snippet": None, "source_url": None, "source_title": None}
@@ -137,86 +66,84 @@ def search_medical(query: str) -> dict:
             "source_url": top.get("url", ""),
             "source_title": top.get("title", ""),
         }
-    except Exception as exc:  # never hard-fail the agent over a search issue
+    except Exception as exc:
         print(f"[agent] search_medical failed: {exc}")
         return {"snippet": None, "source_url": None, "source_title": None}
 
 
-def _execute_tool(name: str, args: dict, features: dict) -> dict:
-    if name == "predict_phase":
-        return predict_phase(features)  # always the real day's features, never the model's args
-    if name == "explain_prediction":
-        return explain_prediction(features)
-    if name == "search_medical":
-        return search_medical(str(args.get("query", "")))
-    return {"error": f"unknown tool '{name}'"}
+def _strip_disclaimer(text: str) -> str:
+    return text.replace(DISCLAIMER, "").strip()
 
 
-def _run_llm_loop(question: str, features: dict) -> tuple[str, str | None]:
-    """Tool-calling loop, hard-capped at MAX_TOOL_CALLS total tool invocations.
-    Returns (answer_text, source_url); source_url only ever comes from an
-    actual search_medical() result."""
-    if not groq_api_key():
-        raise RuntimeError("GROQ_API_KEY not set")
-    messages: list[dict] = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": f"Question: {question}\n\nToday's features: {json.dumps(features)}"},
-    ]
-
-    source_url: str | None = None
-    tool_calls_made = 0
-
-    while True:
-        allow_tools = tool_calls_made < MAX_TOOL_CALLS
-        response = groq_chat_completion(
-            messages=messages,
-            tools=TOOLS_SCHEMA,
-            tool_choice="auto" if allow_tools else "none",
-            temperature=0.2,
-            max_tokens=512,
-        )
-        message = response.choices[0].message
-        messages.append(message.model_dump(exclude_none=True))
-
-        if not message.tool_calls:
-            return (message.content or "").strip(), source_url
-
-        for tool_call in message.tool_calls:
-            tool_calls_made += 1
-            try:
-                args = json.loads(tool_call.function.arguments or "{}")
-            except json.JSONDecodeError:
-                args = {}
-            result = _execute_tool(tool_call.function.name, args, features)
-            if tool_call.function.name == "search_medical" and result.get("source_url"):
-                source_url = result["source_url"]
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tool_call.id,
-                "content": json.dumps(result),
-            })
+def _is_substantive(text: str) -> bool:
+    return len(_strip_disclaimer(text)) >= 20
 
 
-def _templated_answer(features: dict) -> dict[str, Any]:
+def _templated_answer(features: dict, question: str | None = None) -> dict[str, Any]:
     prediction = predict_phase(features)
     drivers = explain_prediction(features)["top_drivers"]
     driver_text = ", ".join(d["feature"] for d in drivers[:3]) if drivers else "the provided signals"
+    probs = prediction["probabilities"]
+    fertility = probs.get("Fertility", 0)
+    extra = ""
+    if question and "ovul" in question.lower():
+        extra = f" The model assigns a {fertility:.0%} probability to the fertile window today."
     answer = (
         f"Based on {driver_text}, the model predicts the {prediction['phase_label']} phase "
-        f"(probabilities: {prediction['probabilities']}). {DISCLAIMER}"
+        f"(probabilities: {probs}).{extra} {DISCLAIMER}"
     )
     return {"answer": answer, "source_url": None}
 
 
+def _direct_answer(question: str, features: dict) -> dict[str, Any]:
+    """One Groq call with model outputs + Tavily snippet pre-fetched."""
+    prediction = predict_phase(features)
+    drivers = explain_prediction(features)["top_drivers"][:5]
+    driver_summary = ", ".join(
+        f"{d['feature']} ({'↑' if d.get('shap', 0) >= 0 else '↓'})" for d in drivers[:3]
+    ) or "no strong drivers"
+
+    grounding = search_medical(f"{question} menstrual cycle phase physiology fertility ovulation")
+    snippet = grounding.get("snippet") or "No external medical reference available."
+    source_url = grounding.get("source_url")
+
+    fertility_pct = prediction["probabilities"].get("Fertility", 0)
+    prompt = (
+        "You explain a wearable-based menstrual cycle phase research prototype.\n\n"
+        f"User question: {question}\n"
+        f"Model predicted phase: {prediction['phase_label']}\n"
+        f"All phase probabilities: {json.dumps(prediction['probabilities'])}\n"
+        f"Fertility-window probability: {fertility_pct:.1%}\n"
+        f"Top model drivers (SHAP): {driver_summary}\n"
+        f"Medical reference snippet: {snippet}\n\n"
+        "Write 2-3 plain-language sentences that directly answer the user's question. "
+        "Use the model probabilities and drivers above; if they ask about ovulation, "
+        "focus on the Fertility probability. You may use the medical snippet for physiology "
+        "context only — do not invent facts beyond it. Do not diagnose or prescribe. "
+        "Do NOT include any disclaimer — the app adds one automatically."
+    )
+
+    response = groq_chat_completion(
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=220,
+        temperature=0.3,
+    )
+    answer = (response.choices[0].message.content or "").strip()
+    if not _is_substantive(answer):
+        raise RuntimeError(f"LLM returned non-substantive answer: {answer!r}")
+
+    if DISCLAIMER not in answer:
+        answer = f"{answer.rstrip()} {DISCLAIMER}"
+    return {"answer": answer, "source_url": source_url}
+
+
 def answer_question(question: str, features: dict) -> dict[str, Any]:
-    """Answers a free-form question about one participant-day. Never raises --
-    every failure mode degrades to a safe templated or apologetic answer."""
     lowered = question.lower()
     if any(keyword in lowered for keyword in DIAGNOSIS_KEYWORDS):
         return {
             "answer": (
                 "I can't provide a diagnosis or treatment recommendation. This tool predicts "
-                f"cycle phase from wearable data only -- it is not a medical device. {DISCLAIMER}"
+                f"cycle phase from wearable data only — it is not a medical device. {DISCLAIMER}"
             ),
             "source_url": None,
         }
@@ -224,16 +151,13 @@ def answer_question(question: str, features: dict) -> dict[str, Any]:
     try:
         if not groq_api_key():
             print("[GROQ] GROQ_API_KEY not set — using template fallback for /ask")
-            return _templated_answer(features)
+            return _templated_answer(features, question)
 
-        answer, source_url = _run_llm_loop(question, features)
-        if DISCLAIMER not in answer:
-            answer = f"{answer.rstrip()} {DISCLAIMER}".strip()
-        return {"answer": answer, "source_url": source_url}
-    except Exception as exc:  # never hard-fail /ask
-        print(f"[GROQ] /ask agent failed, using template fallback: {exc}")
+        return _direct_answer(question, features)
+    except Exception as exc:
+        print(f"[GROQ] /ask failed, using template fallback: {exc}")
         try:
-            return _templated_answer(features)
+            return _templated_answer(features, question)
         except Exception as exc2:
             print(f"[agent] templated fallback also failed: {exc2}")
             return {"answer": f"Unable to generate an answer right now. {DISCLAIMER}", "source_url": None}

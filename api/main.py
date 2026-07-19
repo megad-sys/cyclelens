@@ -4,9 +4,8 @@ POST /predict: features (any subset, model-order-filled with NaN) -> phase +
 probabilities + top-5 SHAP drivers (via src.explain.explain_one).
 POST /explain: phase + drivers -> ONE grounded plain-language sentence
 (Tavily search for medical context, then one Groq LLM call to phrase it).
-POST /ask: free-form question + features -> ONE grounded answer, via the
-tool-calling agent in src.agent (predict_phase / explain_prediction /
-search_medical, capped at 4 tool calls, diagnosis/treatment requests declined).
+POST /ask: free-form question + features -> ONE grounded answer (model outputs +
+Tavily snippet fed into a single Groq call).
 Both TAVILY_API_KEY and GROQ_API_KEY are optional -- their absence degrades
 gracefully (skipped grounding / templated sentence), never a hard failure.
 """
