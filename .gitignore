@@ -1,0 +1,13 @@
+data/raw/
+Dataset/
+*.parquet
+models/*.txt
+!models/lgbm.txt
+.env
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+.DS_Store

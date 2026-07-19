@@ -1,0 +1,35 @@
+{
+  "split": "test",
+  "n_rows": 886,
+  "n_participants": 7,
+  "model": {
+    "macro_f1": 0.3675123344029497,
+    "per_class_f1": {
+      "Menstrual": 0.37745098039215685,
+      "Follicular": 0.37583892617449666,
+      "Fertility": 0.23809523809523808,
+      "Luteal": 0.47866419294990725
+    },
+    "balanced_accuracy": 0.3744165548727906
+  },
+  "global_majority": {
+    "macro_f1": 0.11876075731497418,
+    "per_class_f1": {
+      "Menstrual": 0.0,
+      "Follicular": 0.0,
+      "Fertility": 0.0,
+      "Luteal": 0.4750430292598967
+    },
+    "balanced_accuracy": 0.25
+  },
+  "personal_majority": {
+    "macro_f1": 0.2797400812010955,
+    "per_class_f1": {
+      "Menstrual": 0.0,
+      "Follicular": 0.3893805309734513,
+      "Fertility": 0.26433915211970077,
+      "Luteal": 0.46524064171123
+    },
+    "balanced_accuracy": 0.3165487139671922
+  }
+}
