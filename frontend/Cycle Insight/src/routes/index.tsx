@@ -32,7 +32,11 @@ type PredictResponse = {
   top_drivers: Driver[];
 };
 
-type ExplainResponse = { sentence: string; source_title: string; source_url: string };
+type ExplainResponse = {
+  sentence: string;
+  source_title: string | null;
+  source_url: string | null;
+};
 type AskResponse = { answer: string; source_url: string };
 
 // ---------- Mock backend ----------
@@ -958,15 +962,17 @@ function InsightBox({
       {!loading && !err && explain && (
         <>
           <p className="mt-1.5 text-sm leading-relaxed text-foreground">{explain.sentence}</p>
-          <a
-            href={explain.source_url}
-            target="_blank"
-            rel="noreferrer noopener"
-            className="mt-2 inline-block text-xs font-medium underline underline-offset-2"
-            style={{ color: "var(--brand-primary)" }}
-          >
-            Source: {explain.source_title}
-          </a>
+          {explain.source_url && explain.source_title && (
+            <a
+              href={explain.source_url}
+              target="_blank"
+              rel="noreferrer noopener"
+              className="mt-2 inline-block text-xs font-medium underline underline-offset-2"
+              style={{ color: "var(--brand-primary)" }}
+            >
+              Source: {explain.source_title}
+            </a>
+          )}
         </>
       )}
     </div>
