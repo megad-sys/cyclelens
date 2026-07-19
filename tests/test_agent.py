@@ -76,6 +76,12 @@ class _AggressiveFakeClient:
 # (a) a phase question triggers predict_phase
 # ---------------------------------------------------------------------------
 
+def _fake_groq_from_client(fake_client):
+    def _groq_chat_completion(**kwargs):
+        return fake_client._create(**kwargs)
+    return _groq_chat_completion
+
+
 def test_phase_question_triggers_predict_phase_tool(monkeypatch):
     predict_calls = []
 
@@ -85,10 +91,11 @@ def test_phase_question_triggers_predict_phase_tool(monkeypatch):
 
     monkeypatch.setattr(agent, "predict_phase", fake_predict_phase)
     monkeypatch.setenv("GROQ_API_KEY", "test-key")
-    monkeypatch.setattr(agent, "_create_openai_client", lambda: _ScriptedFakeClient([
+    fake_client = _ScriptedFakeClient([
         _FakeMessage(tool_calls=[_FakeToolCall("call_1", "predict_phase", "{}")]),
         _FakeMessage(content="You're likely in the luteal phase."),
-    ]))
+    ])
+    monkeypatch.setattr(agent, "groq_chat_completion", _fake_groq_from_client(fake_client))
 
     result = agent.answer_question("What phase am I in today?", {"resting_hr": 60.0})
 
@@ -103,9 +110,10 @@ def test_phase_question_triggers_predict_phase_tool(monkeypatch):
 
 def test_disclaimer_always_appended_to_llm_answer(monkeypatch):
     monkeypatch.setenv("GROQ_API_KEY", "test-key")
-    monkeypatch.setattr(agent, "_create_openai_client", lambda: _ScriptedFakeClient([
+    fake_client = _ScriptedFakeClient([
         _FakeMessage(content="This is a plain answer with no disclaimer text at all."),
-    ]))
+    ])
+    monkeypatch.setattr(agent, "groq_chat_completion", _fake_groq_from_client(fake_client))
 
     result = agent.answer_question("Tell me about my cycle.", {"resting_hr": 60.0})
 
@@ -150,7 +158,7 @@ def test_agent_stops_at_tool_call_cap(monkeypatch):
     monkeypatch.setenv("GROQ_API_KEY", "test-key")
 
     fake_client = _AggressiveFakeClient()
-    monkeypatch.setattr(agent, "_create_openai_client", lambda: fake_client)
+    monkeypatch.setattr(agent, "groq_chat_completion", _fake_groq_from_client(fake_client))
 
     result = agent.answer_question("Tell me everything about my cycle.", {"resting_hr": 60.0})
 
@@ -180,6 +188,7 @@ def _fake_load_model_and_features():
 @pytest.fixture()
 def client(monkeypatch):
     monkeypatch.setattr(api_main, "_load_model_and_features", _fake_load_model_and_features)
+    monkeypatch.setattr(api_main, "test_groq_connection", lambda: "test_skipped")
     monkeypatch.setattr(agent, "predict_phase", lambda features: {
         "phase_label": "Luteal", "probabilities": {"Luteal": 0.7},
     })
@@ -209,9 +218,10 @@ def test_ask_with_both_keys_unset_uses_template(client, monkeypatch):
 
 def test_ask_returns_200_with_correct_shape(client, monkeypatch):
     monkeypatch.setenv("GROQ_API_KEY", "test-key")
-    monkeypatch.setattr(agent, "_create_openai_client", lambda: _ScriptedFakeClient([
+    fake_client = _ScriptedFakeClient([
         _FakeMessage(content="You're likely in the luteal phase based on the data provided."),
-    ]))
+    ])
+    monkeypatch.setattr(agent, "groq_chat_completion", _fake_groq_from_client(fake_client))
 
     response = client.post("/ask", json={
         "question": "What phase am I in today?",

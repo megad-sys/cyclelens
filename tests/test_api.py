@@ -56,6 +56,7 @@ def _fake_explain_one(feature_dict, model_path=None, top_k=5):
 def client(monkeypatch):
     monkeypatch.setattr(api_main, "_load_model_and_features", _fake_load_model_and_features)
     monkeypatch.setattr(api_main, "explain_one", _fake_explain_one)
+    monkeypatch.setattr(api_main, "test_groq_connection", lambda: "test_skipped")
     api_main._explain_cache.clear()
     with TestClient(api_main.app) as test_client:
         yield test_client
@@ -68,6 +69,7 @@ def test_health_ok(client, monkeypatch):
     body = response.json()
     assert body["status"] == "ok"
     assert body["groq_configured"] is False
+    assert "groq_status" in body
 
 
 def test_predict_returns_valid_phase_and_probabilities(client):
@@ -98,6 +100,7 @@ def test_predict_works_with_partial_feature_subset(client):
 
 
 def test_predict_probabilities_differ_with_different_temperature_and_hrv(monkeypatch):
+    monkeypatch.setattr(api_main, "test_groq_connection", lambda: "test_skipped")
     # Proves the on-the-fly _pz fill (from feature_stats.json) actually reaches
     # the model: two requests differing only in nightly_temperature/hrv_rmssd
     # must produce different _pz values and therefore different probabilities.
@@ -184,11 +187,10 @@ def test_explain_degrades_gracefully_when_groq_key_set_but_call_fails(client, mo
     monkeypatch.delenv("TAVILY_API_KEY", raising=False)
     monkeypatch.setenv("GROQ_API_KEY", "invalid-key")
 
-    class _RaisingOpenAIClient:
-        def __init__(self, api_key):
-            raise RuntimeError("401 Unauthorized: invalid API key")
+    def _raising_groq(**kwargs):
+        raise RuntimeError("401 Unauthorized: invalid API key")
 
-    monkeypatch.setattr("openai.OpenAI", _RaisingOpenAIClient)
+    monkeypatch.setattr("src.groq_client.groq_chat_completion", _raising_groq)
 
     response = client.post("/explain", json={
         "phase_label": "Luteal",

@@ -29,6 +29,7 @@ from pydantic import BaseModel, Field
 
 from src.agent import answer_question
 from src.explain import explain_one
+from src.groq_client import groq_api_key, groq_status, test_groq_connection
 from src.splits import LABEL_NAMES
 
 load_dotenv()
@@ -68,6 +69,7 @@ def _load_feature_stats() -> dict:
 async def lifespan(app: FastAPI):
     _MODEL_STATE["booster"], _MODEL_STATE["feature_columns"] = _load_model_and_features()
     _MODEL_STATE["feature_stats"] = _load_feature_stats()
+    test_groq_connection()
     yield
     _MODEL_STATE["booster"] = None
     _MODEL_STATE["feature_columns"] = None
@@ -164,13 +166,16 @@ def _fill_derived_features(features: dict, feature_columns: list[str], feature_s
 
 
 def _groq_api_key() -> str | None:
-    key = os.environ.get("GROQ_API_KEY", "").strip()
-    return key or None
+    return groq_api_key()
 
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "groq_configured": _groq_api_key() is not None}
+    return {
+        "status": "ok",
+        "groq_configured": groq_api_key() is not None,
+        "groq_status": groq_status(),
+    }
 
 
 @app.post("/predict", response_model=PredictResponse)
@@ -232,19 +237,16 @@ def _template_sentence(phase_label: str, top_drivers: list[dict]) -> str:
 
 
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
-GROQ_MODEL = "llama-3.3-70b-versatile"
 
 
 def _openai_phrase(phase_label: str, top_drivers: list[dict], snippet: str | None) -> str:
-    api_key = _groq_api_key()
-    if not api_key:
-        print("[llm] GROQ_API_KEY not set — using template fallback")
+    if not groq_api_key():
+        print("[GROQ] GROQ_API_KEY not set — using template fallback for /explain")
         return _template_sentence(phase_label, top_drivers)
 
     try:
-        from openai import OpenAI
+        from src.groq_client import groq_chat_completion
 
-        client = OpenAI(api_key=api_key, base_url=GROQ_BASE_URL)
         driver_text = (
             ", ".join(f"{d['feature']} ({d['direction']})" for d in top_drivers[:5]) or "no drivers provided"
         )
@@ -255,15 +257,14 @@ def _openai_phrase(phase_label: str, top_drivers: list[dict], snippet: str | Non
             "Write ONE plain-language sentence explaining why these wearable signals point to this phase, "
             "using ONLY the medical reference context above. Do not add unsupported medical claims."
         )
-        response = client.chat.completions.create(
-            model=GROQ_MODEL,
+        response = groq_chat_completion(
             messages=[{"role": "user", "content": prompt}],
             max_tokens=120,
             temperature=0.3,
         )
         return response.choices[0].message.content.strip()
-    except Exception as exc:  # invalid/expired key, no credit, rate limit -- never hard-fail
-        print(f"[api] _openai_phrase failed, degrading gracefully: {exc}")
+    except Exception as exc:
+        print(f"[GROQ] /explain LLM call failed, using template fallback: {exc}")
         return _template_sentence(phase_label, top_drivers)
 
 

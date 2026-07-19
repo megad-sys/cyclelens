@@ -31,6 +31,7 @@ import numpy as np
 import pandas as pd
 
 from src.explain import DEFAULT_MODEL_PATH, LABEL_NAMES, LABEL_VALUES, _get_explainer, explain_one
+from src.groq_client import groq_api_key, groq_chat_completion
 
 DISCLAIMER = "Research prototype, not medical advice."
 MAX_TOOL_CALLS = 4
@@ -151,29 +152,12 @@ def _execute_tool(name: str, args: dict, features: dict) -> dict:
     return {"error": f"unknown tool '{name}'"}
 
 
-GROQ_BASE_URL = "https://api.groq.com/openai/v1"
-GROQ_MODEL = "llama-3.3-70b-versatile"
-
-
-def _groq_api_key() -> str | None:
-    key = os.environ.get("GROQ_API_KEY", "").strip()
-    return key or None
-
-
-def _create_openai_client():
-    from openai import OpenAI
-
-    api_key = _groq_api_key()
-    if not api_key:
-        raise RuntimeError("GROQ_API_KEY not set")
-    return OpenAI(api_key=api_key, base_url=GROQ_BASE_URL)
-
-
 def _run_llm_loop(question: str, features: dict) -> tuple[str, str | None]:
     """Tool-calling loop, hard-capped at MAX_TOOL_CALLS total tool invocations.
     Returns (answer_text, source_url); source_url only ever comes from an
     actual search_medical() result."""
-    client = _create_openai_client()
+    if not groq_api_key():
+        raise RuntimeError("GROQ_API_KEY not set")
     messages: list[dict] = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": f"Question: {question}\n\nToday's features: {json.dumps(features)}"},
@@ -184,12 +168,12 @@ def _run_llm_loop(question: str, features: dict) -> tuple[str, str | None]:
 
     while True:
         allow_tools = tool_calls_made < MAX_TOOL_CALLS
-        response = client.chat.completions.create(
-            model=GROQ_MODEL,
+        response = groq_chat_completion(
             messages=messages,
             tools=TOOLS_SCHEMA,
             tool_choice="auto" if allow_tools else "none",
             temperature=0.2,
+            max_tokens=512,
         )
         message = response.choices[0].message
         messages.append(message.model_dump(exclude_none=True))
@@ -238,8 +222,8 @@ def answer_question(question: str, features: dict) -> dict[str, Any]:
         }
 
     try:
-        if not _groq_api_key():
-            print("[llm] GROQ_API_KEY not set — using template fallback")
+        if not groq_api_key():
+            print("[GROQ] GROQ_API_KEY not set — using template fallback for /ask")
             return _templated_answer(features)
 
         answer, source_url = _run_llm_loop(question, features)
@@ -247,7 +231,7 @@ def answer_question(question: str, features: dict) -> dict[str, Any]:
             answer = f"{answer.rstrip()} {DISCLAIMER}".strip()
         return {"answer": answer, "source_url": source_url}
     except Exception as exc:  # never hard-fail /ask
-        print(f"[agent] answer_question failed, degrading gracefully: {exc}")
+        print(f"[GROQ] /ask agent failed, using template fallback: {exc}")
         try:
             return _templated_answer(features)
         except Exception as exc2:
